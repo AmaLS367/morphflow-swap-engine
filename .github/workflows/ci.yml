@@ -16,4 +16,6 @@ jobs:
   - run: pip install -e .[dev]
   - run: ruff check .
   - run: mypy morphflow_swap_engine.py install.py facefusion tests
+  - run: mypy src/morphflow_swap_engine
   - run: pytest tests/test_config.py tests/test_program_helper.py tests/test_state_manager.py tests/test_curl_builder.py -q
+  - run: pytest src/morphflow_swap_engine/tests/test_engine_imports.py -q
