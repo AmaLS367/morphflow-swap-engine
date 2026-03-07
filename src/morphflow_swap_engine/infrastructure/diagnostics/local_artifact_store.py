@@ -17,9 +17,9 @@ class LocalArtifactStore(IArtifactStore):
     def save(self, name: str, data: Any, base_dir: Path) -> StageArtifact:
         """Persist data (images, JSON, numpy arrays) and return metadata."""
         base_dir.mkdir(parents=True, exist_ok=True)
-        
+
         artifact_path = base_dir / name
-        metadata = {}
+        metadata: dict[str, Any] = {}
 
         if isinstance(data, np.ndarray):
             if len(data.shape) in (2, 3) and data.dtype == np.uint8:
@@ -55,5 +55,5 @@ class LocalArtifactStore(IArtifactStore):
         return StageArtifact(
             stage_name=base_dir.name,
             artifact_path=artifact_path,
-            metadata=metadata
+            metadata=metadata,
         )

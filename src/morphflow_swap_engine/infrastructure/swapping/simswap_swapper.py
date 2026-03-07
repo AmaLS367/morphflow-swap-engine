@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from .onnx_swapper import OnnxSwapper
 
 
@@ -9,7 +11,7 @@ class SimSwapSwapper(OnnxSwapper):
     def __init__(
         self,
         model_path: str,
-        **kwargs
+        **kwargs: Any,
     ):
         # SimSwap++ often uses specific normalization (mean=0.5, std=0.5)
         # but it can vary. We use defaults from OnnxSwapper.

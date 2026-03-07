@@ -11,8 +11,10 @@ def apply_color_transfer(target_crop: np.ndarray[Any, Any], source_crop: np.ndar
     Transfers color characteristics from target_crop to source_crop using Lab color space.
     This ensures the swapped face matches the lighting/color of the target video.
     """
-    source_lab = cv2.cvtColor(source_crop, cv2.COLOR_BGR[Any, Any] if hasattr(cv2, 'COLOR_BGR2LAB') else cv2.COLOR_BGR2Lab)
-    target_lab = cv2.cvtColor(target_crop, cv2.COLOR_BGR[Any, Any] if hasattr(cv2, 'COLOR_BGR2LAB') else cv2.COLOR_BGR2Lab)
+    bgr_to_lab = getattr(cv2, "COLOR_BGR2LAB", getattr(cv2, "COLOR_BGR2Lab"))
+    lab_to_bgr = getattr(cv2, "COLOR_Lab2BGR")
+    source_lab = cv2.cvtColor(source_crop, bgr_to_lab)
+    target_lab = cv2.cvtColor(target_crop, bgr_to_lab)
 
     source_mean, source_std = _get_mean_and_std(source_lab)
     target_mean, target_std = _get_mean_and_std(target_lab)
@@ -23,7 +25,7 @@ def apply_color_transfer(target_crop: np.ndarray[Any, Any], source_crop: np.ndar
     result_lab = (source_lab - source_mean) * (target_std / source_std) + target_mean
     result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
 
-    return cv2.cvtColor(result_lab, cv2.COLOR_Lab2BGR)
+    return cv2.cvtColor(result_lab, lab_to_bgr)
 
 
 def _get_mean_and_std(image: np.ndarray[Any, Any]) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:

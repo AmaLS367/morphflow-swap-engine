@@ -20,13 +20,13 @@ class OpenCVVideoEncoder(IVideoEncoder):
     ) -> Path:
         """Write frames to output_path and return it."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Use mp4v codec by default for generic MP4
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        
+        fourcc = getattr(cv2, "VideoWriter_fourcc")(*"mp4v")
+
         # We need width and height. If not present in source_asset, we take it from the first frame.
         writer = None
-        
+
         for frame in frames:
             if writer is None:
                 height, width = frame.shape[:2]
@@ -35,11 +35,11 @@ class OpenCVVideoEncoder(IVideoEncoder):
                     str(output_path),
                     fourcc,
                     fps,
-                    (width, height)
+                    (width, height),
                 )
             writer.write(frame)
-            
+
         if writer is not None:
             writer.release()
-            
+
         return output_path

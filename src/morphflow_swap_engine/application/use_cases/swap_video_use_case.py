@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Generator
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
 
 from morphflow_swap_engine.config.schema import EngineConfig
+from morphflow_swap_engine.core.services.track_scorer import TrackScorer
 from morphflow_swap_engine.core.contracts.i_artifact_store import IArtifactStore
 from morphflow_swap_engine.core.contracts.i_face_aligner import IFaceAligner
 from morphflow_swap_engine.core.contracts.i_face_detector import IFaceDetector
@@ -17,8 +19,11 @@ from morphflow_swap_engine.core.contracts.i_face_tracker import IFaceTracker
 from morphflow_swap_engine.core.contracts.i_temporal_stabilizer import ITemporalStabilizer
 from morphflow_swap_engine.core.contracts.i_video_decoder import IVideoDecoder
 from morphflow_swap_engine.core.contracts.i_video_encoder import IVideoEncoder
+from morphflow_swap_engine.core.entities.detected_face import DetectedFace
 from morphflow_swap_engine.core.entities.swap_request import SwapRequest
 from morphflow_swap_engine.core.entities.swap_result import SwapResult
+from morphflow_swap_engine.core.value_objects.runtime_report import RuntimeReport
+from morphflow_swap_engine.core.value_objects.stage_artifact import StageArtifact
 from morphflow_swap_engine.infrastructure.restoration import apply_color_transfer
 
 
@@ -56,14 +61,34 @@ class SwapVideoUseCase:
         frames_processed = 0
         success = False
         error_message = ""
-        
-        # Prepare artifact directories
+        artifacts: list[StageArtifact] = []
+        warnings: list[str] = []
+        stage_timings: dict[str, float] = {}
+
         job_artifact_dir = Path(self.config.artifact_dir) / str(int(start_time))
+        metadata_dir = job_artifact_dir / "metadata"
+        logs_dir = job_artifact_dir / "logs"
+        stage_root_dir = job_artifact_dir / "artifacts"
         if self.config.save_artifacts and self.artifact_store:
-            job_artifact_dir.mkdir(parents=True, exist_ok=True)
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            stage_root_dir.mkdir(parents=True, exist_ok=True)
+
+        def save_artifact(stage_name: str, name: str, data: Any) -> None:
+            if not (self.config.save_artifacts and self.artifact_store):
+                return
+            artifact = self.artifact_store.save(name, data, stage_root_dir / stage_name)
+            artifacts.append(artifact)
+
+        def write_json(path: Path, payload: dict[str, Any] | list[dict[str, Any]]) -> None:
+            import json
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
         try:
             # 1. Probe video
+            detect_track_started = time.time()
             asset = self.decoder.probe(request.target_asset)
             
             # 2. Extract reference embeddings
@@ -82,9 +107,17 @@ class SwapVideoUseCase:
             # Pick largest/highest score face as reference
             ref_faces.sort(key=lambda f: f.score, reverse=True)
             source_embedding = ref_faces[0].embedding
-            
-            if self.config.save_artifacts and self.artifact_store:
-                self.artifact_store.save("source_face.jpg", ref_img, job_artifact_dir / "00_reference")
+
+            save_artifact("01_detection", "source_face.jpg", ref_img)
+            save_artifact(
+                "01_detection",
+                "reference_analysis",
+                {
+                    "reference_face_count": len(ref_faces),
+                    "selected_score": float(ref_faces[0].score),
+                    "selected_embedding_size": int(source_embedding.size),
+                },
+            )
 
             # 3. Two-pass or One-pass? 
             # Pass 1: Detection & Tracking
@@ -94,96 +127,114 @@ class SwapVideoUseCase:
                 self.tracker.update(detections, frame_idx)
                 frame_idx += 1
 
-            tracks = list(self.tracker.active_tracks.values())
+            stage_timings["detection_tracking_seconds"] = time.time() - detect_track_started
+            tracks = self.tracker.get_tracks(include_inactive=True)
             best_track = self.track_scorer.find_best_track(tracks, (asset.width, asset.height))
             
             if not best_track:
                 raise ValueError("No target face track found in video.")
                 
             target_track_id = best_track.track_id
-            
-            if self.config.save_artifacts and self.artifact_store:
-                self.artifact_store.save("track_info.json", {
+
+            save_artifact(
+                "02_tracking",
+                "track_info",
+                {
                     "track_id": target_track_id,
                     "frame_count": len(best_track.faces),
-                }, job_artifact_dir / "02_tracking")
-            
+                    "missed_frames": best_track.missed_frames,
+                    "stability_score": best_track.stability_score,
+                    "is_active": best_track.is_active,
+                },
+            )
+
             # Pass 2: Swapping & Reconstruction
             output_path = Path(request.output_path)
             if not output_path.parent.exists():
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                
-            def process_frames():
+
+            reconstruction_started = time.time()
+
+            def process_frames() -> Generator[np.ndarray[Any, Any], None, None]:
                 nonlocal frames_processed
                 # Reset tracker/temporal for pass 2
                 if self.temporal_stabilizer:
                     self.temporal_stabilizer.reset()
-                
-                batch_size = self.config.batch_size
-                batch_frames = []
-                batch_faces = []
-                batch_indices = []
 
-                def flush_batch():
+                batch_size = self.config.batch_size
+                batch_frames: list[np.ndarray[Any, Any]] = []
+                batch_faces: list[Optional[DetectedFace]] = []
+                batch_indices: list[int] = []
+
+                def flush_batch() -> list[np.ndarray[Any, Any]]:
                     if not batch_frames:
                         return []
-                    
+
                     # 1. Prepare batch crops and matrices
-                    crops = []
-                    inv_matrices = []
-                    valid_indices = []
-                    
+                    crops: list[np.ndarray[Any, Any]] = []
+                    inv_matrices: list[np.ndarray[Any, Any]] = []
+                    valid_indices: list[int] = []
+
                     for i, face in enumerate(batch_faces):
                         if face is not None:
                             crop, inv_matrix = self.aligner.align(batch_frames[i], face)
                             crops.append(crop)
                             inv_matrices.append(inv_matrix)
                             valid_indices.append(i)
-                    
+
                     if crops:
                         # 2. Batched Swap
                         swapped_crops = self.swapper.swap_batch(source_embedding, crops)
-                        
+
                         # 3. Post-process each swapped crop
                         for i, swapped_crop in enumerate(swapped_crops):
                             orig_idx = valid_indices[i]
                             frame_idx = batch_indices[orig_idx]
                             orig_crop = crops[i]
                             inv_matrix = inv_matrices[i]
-                            
+
                             # Apply color transfer
                             swapped_crop = apply_color_transfer(orig_crop, swapped_crop)
-                            
+                            if frame_idx % 60 == 0:
+                                save_artifact("04_swap", f"frame_{frame_idx}_swap.jpg", swapped_crop)
+
                             # Restore
                             if self.config.enable_restoration and self.restorer:
                                 swapped_crop = self.restorer.restore(swapped_crop)
-                            
+                                if frame_idx % 60 == 0:
+                                    save_artifact("05_restore", f"frame_{frame_idx}_restore.jpg", swapped_crop)
+
                             # Temporal Stabilize
                             if self.config.enable_temporal_stabilization and self.temporal_stabilizer:
                                 swapped_crop = self.temporal_stabilizer.stabilize(swapped_crop, target_track_id)
-                                
+                                if frame_idx % 60 == 0:
+                                    save_artifact("06_temporal", f"frame_{frame_idx}_temporal.jpg", swapped_crop)
+
                             # Paste back
                             mask_height, mask_width = swapped_crop.shape[:2]
                             mask = np.ones((mask_height, mask_width, 1), dtype=np.float32)
                             margin = int(min(mask_height, mask_width) * 0.1)
-                            mask[:margin, :] *= np.linspace(0, 1, margin).reshape(-1, 1, 1)
-                            mask[-margin:, :] *= np.linspace(1, 0, margin).reshape(-1, 1, 1)
-                            mask[:, :margin] *= np.linspace(0, 1, margin).reshape(1, -1, 1)
-                            mask[:, -margin:] *= np.linspace(1, 0, margin).reshape(1, -1, 1)
-                            blur_size = (margin * 2) | 1
-                            mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
-                            if len(mask.shape) == 2: mask = np.expand_dims(mask, axis=-1)
-                            
+                            if margin > 0:
+                                mask[:margin, :] *= np.linspace(0, 1, margin).reshape(-1, 1, 1)
+                                mask[-margin:, :] *= np.linspace(1, 0, margin).reshape(-1, 1, 1)
+                                mask[:, :margin] *= np.linspace(0, 1, margin).reshape(1, -1, 1)
+                                mask[:, -margin:] *= np.linspace(1, 0, margin).reshape(1, -1, 1)
+                                blur_size = (margin * 2) | 1
+                                mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+                            if len(mask.shape) == 2:
+                                mask = np.expand_dims(mask, axis=-1)
+
                             paste_w, paste_h = batch_frames[orig_idx].shape[1], batch_frames[orig_idx].shape[0]
                             inv_mask = cv2.warpAffine(mask, inv_matrix, (paste_w, paste_h))
-                            if len(inv_mask.shape) == 2: inv_mask = np.expand_dims(inv_mask, axis=-1)
-                            
+                            if len(inv_mask.shape) == 2:
+                                inv_mask = np.expand_dims(inv_mask, axis=-1)
+
                             inv_crop = cv2.warpAffine(swapped_crop, inv_matrix, (paste_w, paste_h), borderMode=cv2.BORDER_REPLICATE)
-                            
+
                             batch_frames[orig_idx] = (batch_frames[orig_idx] * (1 - inv_mask) + inv_crop * inv_mask).astype(np.uint8)
 
-                            if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
-                                self.artifact_store.save(f"frame_{frame_idx}_final_crop.jpg", swapped_crop, job_artifact_dir / "07_final")
+                            if frame_idx % 60 == 0:
+                                save_artifact("07_reconstruction", f"frame_{frame_idx}_frame.jpg", batch_frames[orig_idx])
 
                     results = list(batch_frames)
                     batch_frames.clear()
@@ -211,18 +262,64 @@ class SwapVideoUseCase:
                 for processed_frame in flush_batch():
                     frames_processed += 1
                     yield processed_frame
-            
+
             # Encode
             self.encoder.encode(process_frames(), asset, output_path)
+            stage_timings["reconstruction_seconds"] = time.time() - reconstruction_started
             success = True
 
         except Exception as e:
             error_message = str(e)
             success = False
+            if self.config.save_artifacts:
+                (logs_dir / "run.log").write_text(error_message, encoding="utf-8")
 
         duration = time.time() - start_time
+        runtime_report = RuntimeReport(
+            total_frames=frames_processed,
+            total_duration_seconds=duration,
+            avg_fps=(frames_processed / duration) if duration > 0 else 0.0,
+            artifacts=artifacts,
+            warnings=warnings,
+        )
+        if self.config.save_artifacts:
+            write_json(
+                metadata_dir / "artifact_manifest.json",
+                [
+                    {
+                        "stage_name": artifact.stage_name,
+                        "artifact_path": str(artifact.artifact_path),
+                        "metadata": artifact.metadata,
+                    }
+                    for artifact in artifacts
+                ],
+            )
+            write_json(
+                metadata_dir / "runtime_report.json",
+                {
+                    "profile": self.config.profile,
+                    "success": success,
+                    "error_message": error_message,
+                    "used_modules": {
+                        "detector": type(self.detector).__name__,
+                        "tracker": type(self.tracker).__name__,
+                        "aligner": type(self.aligner).__name__,
+                        "swapper": type(self.swapper).__name__,
+                        "restorer": type(self.restorer).__name__ if self.restorer else None,
+                        "temporal": type(self.temporal_stabilizer).__name__ if self.temporal_stabilizer else None,
+                    },
+                    "stage_timings": stage_timings,
+                    "total_frames": runtime_report.total_frames,
+                    "total_duration_seconds": runtime_report.total_duration_seconds,
+                    "avg_fps": runtime_report.avg_fps,
+                    "warnings": runtime_report.warnings,
+                },
+            )
+            if not error_message:
+                (logs_dir / "run.log").write_text("run completed successfully", encoding="utf-8")
+
         return SwapResult(
-            output_path=request.output_path,
+            output_path=Path(request.output_path),
             frames_processed=frames_processed,
             duration_seconds=duration,
             success=success,

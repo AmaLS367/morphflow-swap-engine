@@ -32,7 +32,7 @@ class InsightFaceDetector(IFaceDetector):
         self.root = root
         self.providers = providers
         self.det_size = det_size
-        self.app = None
+        self.app: Any | None = None
         self._is_prepared = False
 
     def _prepare(self) -> None:
@@ -47,6 +47,8 @@ class InsightFaceDetector(IFaceDetector):
     def detect(self, frame: np.ndarray[Any, Any], score_threshold: float = 0.5) -> List[DetectedFace]:
         """Detect faces in a frame using InsightFace."""
         self._prepare()
+        if self.app is None:
+            raise RuntimeError("InsightFace detector failed to initialize.")
         
         # insightface expects BGR image (opencv default)
         faces = self.app.get(frame)
