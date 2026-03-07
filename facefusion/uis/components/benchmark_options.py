@@ -9,7 +9,7 @@ from facefusion.types import BenchmarkMode, BenchmarkResolution
 
 BENCHMARK_MODE_DROPDOWN : Optional[gradio.Dropdown] = None
 BENCHMARK_RESOLUTIONS_CHECKBOX_GROUP : Optional[gradio.CheckboxGroup] = None
-BENCHMARK_CYCLE_COUNT_SLIDER : Optional[gradio.Button] = None
+BENCHMARK_CYCLE_COUNT_SLIDER : Optional[gradio.Slider] = None
 
 
 def render() -> None:

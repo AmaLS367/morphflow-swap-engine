@@ -234,7 +234,7 @@ def create_area_mask(crop_vision_frame : VisionFrame, face_landmark_68 : FaceLan
 	convex_hull = cv2.convexHull(face_landmark_68[landmark_points].astype(numpy.int32))
 	area_mask = numpy.zeros(crop_size).astype(numpy.float32)
 	cv2.fillConvexPoly(area_mask, convex_hull, 1.0) # type: ignore[call-overload]
-	area_mask = (cv2.GaussianBlur(area_mask.clip(0, 1), (0, 0), 5).clip(0.5, 1) - 0.5) * 2
+	area_mask = ((cv2.GaussianBlur(area_mask.clip(0, 1), (0, 0), 5).clip(0.5, 1) - 0.5) * 2).astype(numpy.float32)
 	return area_mask
 
 
@@ -248,9 +248,9 @@ def create_region_mask(crop_vision_frame : VisionFrame, face_mask_regions : List
 	prepare_vision_frame = numpy.expand_dims(prepare_vision_frame, axis = 0)
 	prepare_vision_frame = prepare_vision_frame.transpose(0, 3, 1, 2)
 	region_mask = forward_parse_face(prepare_vision_frame)
-	region_mask = numpy.isin(region_mask.argmax(0), [ facefusion.choices.face_mask_region_set.get(face_mask_region) for face_mask_region in face_mask_regions ])
-	region_mask = cv2.resize(region_mask.astype(numpy.float32), crop_vision_frame.shape[:2][::-1])
-	region_mask = (cv2.GaussianBlur(region_mask.clip(0, 1), (0, 0), 5).clip(0.5, 1) - 0.5) * 2
+	region_mask = numpy.isin(region_mask.argmax(0), [ facefusion.choices.face_mask_region_set.get(face_mask_region) for face_mask_region in face_mask_regions ]).astype(numpy.float32)
+	region_mask = cv2.resize(region_mask, crop_vision_frame.shape[:2][::-1]).astype(numpy.float32)
+	region_mask = ((cv2.GaussianBlur(region_mask.clip(0, 1), (0, 0), 5).clip(0.5, 1) - 0.5) * 2).astype(numpy.float32)
 	return region_mask
 
 

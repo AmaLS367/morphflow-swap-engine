@@ -69,9 +69,10 @@ def extract_audio_frames(spectrogram : Spectrogram, fps : Fps) -> List[AudioFram
 	indices = numpy.arange(0, spectrogram.shape[1], mel_filter_total / fps).astype(numpy.int16)
 	indices = indices[indices >= audio_step_size]
 
-	for index in indices:
+	for index in indices.tolist():
 		start = max(0, index - audio_step_size)
-		audio_frames.append(spectrogram[:, start:index])
+		end = index
+		audio_frames.append(spectrogram[:, start:end])
 
 	return audio_frames
 

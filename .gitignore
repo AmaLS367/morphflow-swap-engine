@@ -4,4 +4,7 @@ __pycache__
 .caches
 .idea
 .jobs
+.mypy_cache
+.pytest_cache
+.ruff_cache
 .vscode
