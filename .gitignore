@@ -8,3 +8,4 @@ __pycache__
 .pytest_cache
 .ruff_cache
 .vscode
+PHASE1_COMMIT_PLAN.md
