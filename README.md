@@ -31,14 +31,14 @@ The current baseline remains valuable for comparison runs and for reusing pieces
 
 ## Running the current baseline
 
-Until the runtime rename lands in this cleanup phase, use the inherited commands:
+Use the renamed MorphFlow entrypoint for the preserved legacy baseline:
 
 ```powershell
-python facefusion.py --help
+python morphflow_swap_engine.py --help
 python install.py --help
 ```
 
-The default legacy config template is currently `facefusion.ini`.
+The default config template is `morphflow_swap_engine.ini`.
 
 ## Development notes
 

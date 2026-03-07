@@ -24,7 +24,7 @@ def create_help_formatter_large(prog : str) -> HelpFormatter:
 def create_config_path_program() -> ArgumentParser:
 	program = ArgumentParser(add_help = False)
 	group_paths = program.add_argument_group('paths')
-	group_paths.add_argument('--config-path', help = translator.get('help.config_path'), default = 'facefusion.ini')
+	group_paths.add_argument('--config-path', help = translator.get('help.config_path'), default = 'morphflow_swap_engine.ini')
 	job_store.register_job_keys([ 'config_path' ])
 	apply_config_path(program)
 	return program
