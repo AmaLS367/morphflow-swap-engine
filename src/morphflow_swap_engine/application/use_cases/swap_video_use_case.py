@@ -19,7 +19,7 @@ from morphflow_swap_engine.core.contracts.i_video_decoder import IVideoDecoder
 from morphflow_swap_engine.core.contracts.i_video_encoder import IVideoEncoder
 from morphflow_swap_engine.core.entities.swap_request import SwapRequest
 from morphflow_swap_engine.core.entities.swap_result import SwapResult
-from morphflow_swap_engine.core.services.track_scorer import TrackScorer
+from morphflow_swap_engine.infrastructure.restoration import apply_color_transfer
 
 
 class SwapVideoUseCase:
@@ -135,6 +135,10 @@ class SwapVideoUseCase:
                         
                         # 2. Swap
                         swapped_crop = self.swapper.swap(source_embedding, crop)
+                        
+                        # Apply color transfer to match target lighting
+                        swapped_crop = apply_color_transfer(crop, swapped_crop)
+                        
                         if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
                             self.artifact_store.save(f"frame_{frame_idx}_swapped.jpg", swapped_crop, job_artifact_dir / "04_swap")
                         
