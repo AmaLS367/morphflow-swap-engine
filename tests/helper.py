@@ -4,6 +4,8 @@ import tempfile
 from facefusion.filesystem import create_directory, is_directory, is_file, remove_directory
 from facefusion.types import JobStatus
 
+CLI_ENTRYPOINT = 'morphflow_swap_engine.py'
+
 
 def is_test_job_file(file_path : str, job_status : JobStatus) -> bool:
 	return is_file(get_test_job_file(file_path, job_status))
