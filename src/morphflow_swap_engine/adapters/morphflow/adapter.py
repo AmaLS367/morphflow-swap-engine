@@ -17,6 +17,7 @@ from ...infrastructure.temporal.film_stabilizer import FilmStabilizer
 from ...infrastructure.tracking.iou_tracker import IOUFaceTracker
 from ...infrastructure.video.opencv_video_decoder import OpenCVVideoDecoder
 from ...infrastructure.video.opencv_video_encoder import OpenCVVideoEncoder
+from ...infrastructure.diagnostics.local_artifact_store import LocalArtifactStore
 from ...application.use_cases.swap_video_use_case import SwapVideoUseCase
 
 
@@ -36,6 +37,7 @@ class MorphFlowAdapter:
         self.tracker = IOUFaceTracker()
         self.track_scorer = TrackScorer()
         self.aligner = AffineFaceAligner(crop_size=512, template="ffhq")
+        self.artifact_store = LocalArtifactStore()
         
         # Paths would typically come from config, using defaults for now
         self.swapper = GhostSwapper(model_path="models/ghost_1_256.onnx", batch_size=self.config.batch_size, use_fp16=self.config.use_fp16)
@@ -52,7 +54,8 @@ class MorphFlowAdapter:
             aligner=self.aligner,
             swapper=self.swapper,
             restorer=self.restorer,
-            temporal_stabilizer=self.temporal_stabilizer
+            temporal_stabilizer=self.temporal_stabilizer,
+            artifact_store=self.artifact_store
         )
 
     def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from morphflow_swap_engine.config.schema import EngineConfig
+from morphflow_swap_engine.core.contracts.i_artifact_store import IArtifactStore
 from morphflow_swap_engine.core.contracts.i_face_aligner import IFaceAligner
 from morphflow_swap_engine.core.contracts.i_face_detector import IFaceDetector
 from morphflow_swap_engine.core.contracts.i_face_restorer import IFaceRestorer
@@ -36,6 +37,7 @@ class SwapVideoUseCase:
         swapper: IFaceSwapper,
         restorer: Optional[IFaceRestorer] = None,
         temporal_stabilizer: Optional[ITemporalStabilizer] = None,
+        artifact_store: Optional[IArtifactStore] = None,
     ):
         self.config = config
         self.decoder = decoder
@@ -47,25 +49,27 @@ class SwapVideoUseCase:
         self.swapper = swapper
         self.restorer = restorer
         self.temporal_stabilizer = temporal_stabilizer
+        self.artifact_store = artifact_store
 
     def execute(self, request: SwapRequest) -> SwapResult:
         start_time = time.time()
         frames_processed = 0
         success = False
         error_message = ""
+        
+        # Prepare artifact directories
+        job_artifact_dir = Path(self.config.artifact_dir) / str(int(start_time))
+        if self.config.save_artifacts and self.artifact_store:
+            job_artifact_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             # 1. Probe video
             asset = self.decoder.probe(request.target_asset)
             
             # 2. Extract reference embeddings
-            # (Assuming reference faces are already analyzed or we do it here)
-            # For simplicity, if reference_faces have embeddings, use the first one.
             if not request.reference_faces:
                 raise ValueError("No reference faces provided.")
             
-            # This requires reading the reference image and getting its embedding.
-            # In a full system, reference faces might just have paths, and we need to detect them.
             ref_path = request.reference_faces[0].asset_path
             ref_img = cv2.imread(ref_path)
             if ref_img is None:
@@ -78,25 +82,12 @@ class SwapVideoUseCase:
             # Pick largest/highest score face as reference
             ref_faces.sort(key=lambda f: f.score, reverse=True)
             source_embedding = ref_faces[0].embedding
+            
+            if self.config.save_artifacts and self.artifact_store:
+                self.artifact_store.save("source_face.jpg", ref_img, job_artifact_dir / "00_reference")
 
             # 3. Two-pass or One-pass? 
-            # Ideally: Pass 1: detect and track to find the target track ID.
-            # Pass 2: swap on the chosen track ID.
-            # For this pipeline, we will simulate the pipeline by maintaining tracks.
-            # Let's do a simple one-pass where we swap the main face in each frame, 
-            # or a buffered approach.
-            # A true tracking implementation needs to know which track to swap *before* or *during* processing.
-            # Here we just swap the most prominent face in each frame for a simple implementation,
-            # or we collect all tracks first.
-            
-            # To adhere to Phase 3/4, we should use tracker.
-            # Since doing 2 passes requires storing all frames or decoding twice,
-            # we decode twice for a robust pipeline:
-            
             # Pass 1: Detection & Tracking
-            frames_cache = [] # Cache frames in memory if short, else just re-decode.
-            # Let's do 2-pass decoding for memory safety.
-            
             frame_idx = 0
             for frame in self.decoder.frames(asset):
                 detections = self.detector.detect(frame, score_threshold=self.config.detector_score_threshold)
@@ -110,6 +101,12 @@ class SwapVideoUseCase:
                 raise ValueError("No target face track found in video.")
                 
             target_track_id = best_track.track_id
+            
+            if self.config.save_artifacts and self.artifact_store:
+                self.artifact_store.save("track_info.json", {
+                    "track_id": target_track_id,
+                    "frame_count": len(best_track.faces),
+                }, job_artifact_dir / "02_tracking")
             
             # Pass 2: Swapping & Reconstruction
             output_path = Path(request.output_path)
@@ -133,17 +130,26 @@ class SwapVideoUseCase:
                     if target_face is not None:
                         # 1. Align & Crop
                         crop, inv_matrix = self.aligner.align(frame, target_face)
+                        if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
+                            self.artifact_store.save(f"frame_{frame_idx}_crop.jpg", crop, job_artifact_dir / "03_alignment")
                         
                         # 2. Swap
                         swapped_crop = self.swapper.swap(source_embedding, crop)
+                        if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
+                            self.artifact_store.save(f"frame_{frame_idx}_swapped.jpg", swapped_crop, job_artifact_dir / "04_swap")
                         
                         # 3. Restore (optional)
                         if self.config.enable_restoration and self.restorer:
                             swapped_crop = self.restorer.restore(swapped_crop)
+                            if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
+                                self.artifact_store.save(f"frame_{frame_idx}_restored.jpg", swapped_crop, job_artifact_dir / "05_restore")
                             
                         # 4. Temporal Stabilize (optional)
                         if self.config.enable_temporal_stabilization and self.temporal_stabilizer:
                             swapped_crop = self.temporal_stabilizer.stabilize(swapped_crop, target_track_id)
+                            if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
+                                self.artifact_store.save(f"frame_{frame_idx}_stabilized.jpg", swapped_crop, job_artifact_dir / "06_temporal")
+
                             
                         # 5. Paste back
                         # Create a soft mask based on the crop size to avoid box artifacts.
