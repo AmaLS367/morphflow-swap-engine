@@ -1,5 +1,11 @@
 # MorphFlow Swap Engine — План реализации
 
+## Status Note
+
+- As of 2026-03-07, the repository no longer carries the preserved `facefusion/` baseline.
+- This is an explicit deviation from the original phased migration plan, executed by direct user request.
+- The plan remains useful as architecture and sequencing context, but any instructions that require keeping the legacy runtime callable are now historical rather than operative.
+
 ## Цель
 
 Собрать новый `morphflow-swap-engine` как замену текущему слабому ядру face swap.

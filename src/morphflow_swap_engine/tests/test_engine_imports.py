@@ -49,5 +49,5 @@ def test_contracts_importable() -> None:
 def test_adapter_importable() -> None:
     from morphflow_swap_engine.adapters.morphflow import MorphFlowAdapter, use_new_engine
 
-    assert callable(use_new_engine)
+    assert use_new_engine() is True
     assert MorphFlowAdapter is not None

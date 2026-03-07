@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict
 
-from .feature_flag import use_new_engine
 from .request_mapper import map_request
 from .response_mapper import map_response
 from ...core.entities.swap_result import SwapResult
@@ -27,12 +27,7 @@ from ...core.contracts.i_temporal_stabilizer import ITemporalStabilizer
 
 
 class MorphFlowAdapter:
-    """Entry point that routes MorphFlow API calls to the correct engine.
-
-    When the MORPHFLOW_NEW_ENGINE feature flag is off, the adapter raises
-    NotImplementedError so the caller falls back to the legacy FaceFusion path.
-    When the flag is on, the adapter delegates to the new engine pipeline.
-    """
+    """Entry point that routes MorphFlow API calls into the swap engine."""
 
     MODEL_PATHS = {
         "ghost_512": "models/ghost_512.onnx",
@@ -96,13 +91,10 @@ class MorphFlowAdapter:
 
     def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Process a swap request payload and return a response dict."""
-        if not use_new_engine():
-            raise NotImplementedError(
-                "New engine is disabled. Set MORPHFLOW_NEW_ENGINE=1 to enable."
-            )
-
         request = map_request(payload)
-        config = apply_profile(load_config(), request.profile_name)
+        config_path = payload.get("config_path")
+        ini_path = Path(config_path) if config_path else None
+        config = apply_profile(load_config(ini_path), request.profile_name)
         use_case = self._build_use_case(config)
 
         try:
