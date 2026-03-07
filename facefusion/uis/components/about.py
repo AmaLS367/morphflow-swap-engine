@@ -13,5 +13,5 @@ def render() -> None:
 	METADATA_BUTTON = gradio.Button(
 		value = metadata.get('name') + ' ' + metadata.get('version'),
 		variant = 'primary',
-		link = metadata.get('url')
+		link = metadata.get('url') or None
 	)

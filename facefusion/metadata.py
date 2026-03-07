@@ -2,12 +2,12 @@ from typing import Optional
 
 METADATA =\
 {
-	'name': 'FaceFusion',
-	'description': 'Industry leading face manipulation platform',
-	'version': '3.5.3',
+	'name': 'morphflow-swap-engine',
+	'description': 'MorphFlow face swap engine baseline for modular engine migration',
+	'version': '0.1.0',
 	'license': 'OpenRAIL-AS',
-	'author': 'Henry Ruhs',
-	'url': 'https://facefusion.io'
+	'author': 'MorphFlow',
+	'url': ''
 }
 
 
