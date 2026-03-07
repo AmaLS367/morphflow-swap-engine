@@ -15,11 +15,13 @@ class TrackScorer:
         weight_size: float = 1.0,
         weight_confidence: float = 0.5,
         weight_centrality: float = 0.5,
+        weight_stability: float = 1.5,
     ):
         self.weight_persistence = weight_persistence
         self.weight_size = weight_size
         self.weight_confidence = weight_confidence
         self.weight_centrality = weight_centrality
+        self.weight_stability = weight_stability
 
     def find_best_track(
         self,
@@ -52,6 +54,7 @@ class TrackScorer:
         """Calculate a composite score for a single track."""
         # 1. Persistence (track length relative to total potential frames)
         persistence = len(track.faces)
+        stability = track.stability_score if track.stability_score > 0 else 0.0
         
         # 2. Average Size
         sizes = []
@@ -87,7 +90,8 @@ class TrackScorer:
             self.weight_persistence * persistence +
             self.weight_size * (avg_size / 10000.0) +  # rough normalization for pixels
             self.weight_confidence * avg_confidence +
-            self.weight_centrality * centrality
+            self.weight_centrality * centrality +
+            self.weight_stability * stability
         )
         
         return float(total_score)

@@ -12,3 +12,7 @@ class TrackedFaceSequence:
 
     track_id: int
     faces: List[DetectedFace] = field(default_factory=list)
+    missed_frames: int = 0
+    stability_score: float = 0.0
+    last_seen_frame: int = -1
+    is_active: bool = True

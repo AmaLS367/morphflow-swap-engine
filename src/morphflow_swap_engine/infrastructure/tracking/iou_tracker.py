@@ -25,14 +25,19 @@ class IOUFaceTracker(IFaceTracker):
             for det in detections:
                 det.track_id = self.next_track_id
                 det.frame_index = frame_index
-                seq = TrackedFaceSequence(track_id=self.next_track_id, faces=[det])
+                seq = TrackedFaceSequence(
+                    track_id=self.next_track_id,
+                    faces=[det],
+                    last_seen_frame=frame_index,
+                    stability_score=1.0,
+                )
                 self.active_tracks[self.next_track_id] = seq
                 self.lost_frames[self.next_track_id] = 0
                 self.next_track_id += 1
             return list(self.active_tracks.values())
 
         # Match detections to existing tracks
-        track_ids = list(self.active_tracks.keys())
+        track_ids = [tid for tid, track in self.active_tracks.items() if track.is_active]
         last_faces = [self.active_tracks[tid].faces[-1] for tid in track_ids]
         
         matches: List[tuple[int, int, float]] = []
@@ -66,15 +71,24 @@ class IOUFaceTracker(IFaceTracker):
             det = detections[det_idx]
             det.track_id = tid
             det.frame_index = frame_index
-            self.active_tracks[tid].faces.append(det)
+            track = self.active_tracks[tid]
+            track.faces.append(det)
+            track.last_seen_frame = frame_index
             self.lost_frames[tid] = 0
+            track.missed_frames = 0
+            track.stability_score = self._calculate_stability(track)
 
         # Handle unmatched detections (new tracks)
         for det_idx, det in enumerate(detections):
             if det_idx not in used_det:
                 det.track_id = self.next_track_id
                 det.frame_index = frame_index
-                seq = TrackedFaceSequence(track_id=self.next_track_id, faces=[det])
+                seq = TrackedFaceSequence(
+                    track_id=self.next_track_id,
+                    faces=[det],
+                    last_seen_frame=frame_index,
+                    stability_score=1.0,
+                )
                 self.active_tracks[self.next_track_id] = seq
                 self.lost_frames[self.next_track_id] = 0
                 self.next_track_id += 1
@@ -83,12 +97,18 @@ class IOUFaceTracker(IFaceTracker):
         lost_track_ids = [tid for i, tid in enumerate(track_ids) if i not in used_track]
         for tid in lost_track_ids:
             self.lost_frames[tid] += 1
+            track = self.active_tracks[tid]
+            track.missed_frames = self.lost_frames[tid]
+            track.stability_score = self._calculate_stability(track)
             if self.lost_frames[tid] > self.max_lost_frames:
-                # Still keep track data but mark it for final results if needed
-                # For now just stop updating it
-                pass
+                track.is_active = False
 
         return list(self.active_tracks.values())
+
+    def get_tracks(self, include_inactive: bool = True) -> List[TrackedFaceSequence]:
+        if include_inactive:
+            return list(self.active_tracks.values())
+        return [track for track in self.active_tracks.values() if track.is_active]
 
     def reset(self) -> None:
         self.active_tracks.clear()
@@ -110,3 +130,9 @@ class IOUFaceTracker(IFaceTracker):
         if union <= 0:
             return 0.0
         return float(intersection / union)
+
+    def _calculate_stability(self, track: TrackedFaceSequence) -> float:
+        total = len(track.faces) + track.missed_frames
+        if total <= 0:
+            return 0.0
+        return float(len(track.faces) / total)
