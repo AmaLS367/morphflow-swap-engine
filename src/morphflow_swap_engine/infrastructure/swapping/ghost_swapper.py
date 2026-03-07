@@ -84,46 +84,29 @@ class GhostSwapper(IFaceSwapper):
         return crop.astype(np.uint8)
 
     def swap(self, source_embedding: Any, target_crop: Any) -> Any:
-        """Swap the identity of the target crop.
-        
-        Args:
-            source_embedding: Identity embedding of the source face.
-            target_crop: The aligned target face crop.
-            
-        Returns:
-            The swapped face crop.
-        """
+        """Swap the identity of the target crop."""
+        return self.swap_batch(source_embedding, [target_crop])[0]
+
+    def swap_batch(self, source_embedding: Any, target_crops: List[np.ndarray[Any, Any]]) -> List[np.ndarray[Any, Any]]:
+        """Swap identity for a batch of crops."""
         if self.session is None:
             self.load()
 
-        # Ensure embedding is correct shape. Some Ghost variants need specific shapes.
-        # Assuming embedding is (1, 512)
         emb = np.array(source_embedding, dtype=np.float32)
         if len(emb.shape) == 1:
             emb = np.expand_dims(emb, axis=0)
+        
+        # Ghost models often expect embedding to match batch size
+        if emb.shape[0] == 1 and len(target_crops) > 1:
+            emb = np.repeat(emb, len(target_crops), axis=0)
 
-        # Normalize target crop
-        norm_crop = self._normalize_crop(target_crop)
-        norm_crop = np.expand_dims(norm_crop, axis=0) # Add batch dimension
+        norm_crops = np.stack([self._normalize_crop(c) for c in target_crops])
 
-        if self.use_fp16:
-            # Note: For FP16 inference, the model itself should be cast to FP16,
-            # or we cast inputs if the graph expects FP16.
-            pass
-
-        # Run inference
-        # The input names for Ghost are typically "target" and "source" 
-        # but we use _input_names to be safer.
-        # Usually: index 0 is target image, index 1 is source embedding
         inputs = {
-            self._input_names[0]: norm_crop,
+            self._input_names[0]: norm_crops,
             self._input_names[1]: emb
         }
         
         outputs = self.session.run(self._output_names, inputs)
         
-        # Output is usually at index 0, with shape (1, 3, H, W)
-        swapped_crop = outputs[0][0]
-        
-        # Denormalize
-        return self._denormalize_crop(swapped_crop)
+        return [self._denormalize_crop(out) for out in outputs[0]]

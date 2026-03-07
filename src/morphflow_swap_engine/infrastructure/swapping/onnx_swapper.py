@@ -64,6 +64,9 @@ class OnnxSwapper(IFaceSwapper):
         return crop.astype(np.uint8)
 
     def swap(self, source_embedding: Any, target_crop: Any) -> Any:
+        return self.swap_batch(source_embedding, [target_crop])[0]
+
+    def swap_batch(self, source_embedding: Any, target_crops: List[np.ndarray[Any, Any]]) -> List[np.ndarray[Any, Any]]:
         if self.session is None:
             self.load()
 
@@ -71,12 +74,15 @@ class OnnxSwapper(IFaceSwapper):
         if len(emb.shape) == 1:
             emb = np.expand_dims(emb, axis=0)
 
-        norm_crop = np.expand_dims(self._normalize(target_crop), axis=0)
+        if emb.shape[0] == 1 and len(target_crops) > 1:
+            emb = np.repeat(emb, len(target_crops), axis=0)
+
+        norm_crops = np.stack([self._normalize(c) for c in target_crops])
 
         inputs = {
-            self._input_names[0]: norm_crop,
+            self._input_names[0]: norm_crops,
             self._input_names[1]: emb
         }
         
         outputs = self.session.run(self._output_names, inputs)
-        return self._denormalize(outputs[0][0])
+        return [self._denormalize(out) for out in outputs[0]]

@@ -118,79 +118,99 @@ class SwapVideoUseCase:
                 # Reset tracker/temporal for pass 2
                 if self.temporal_stabilizer:
                     self.temporal_stabilizer.reset()
+                
+                batch_size = self.config.batch_size
+                batch_frames = []
+                batch_faces = []
+                batch_indices = []
+
+                def flush_batch():
+                    if not batch_frames:
+                        return []
                     
+                    # 1. Prepare batch crops and matrices
+                    crops = []
+                    inv_matrices = []
+                    valid_indices = []
+                    
+                    for i, face in enumerate(batch_faces):
+                        if face is not None:
+                            crop, inv_matrix = self.aligner.align(batch_frames[i], face)
+                            crops.append(crop)
+                            inv_matrices.append(inv_matrix)
+                            valid_indices.append(i)
+                    
+                    if crops:
+                        # 2. Batched Swap
+                        swapped_crops = self.swapper.swap_batch(source_embedding, crops)
+                        
+                        # 3. Post-process each swapped crop
+                        for i, swapped_crop in enumerate(swapped_crops):
+                            orig_idx = valid_indices[i]
+                            frame_idx = batch_indices[orig_idx]
+                            orig_crop = crops[i]
+                            inv_matrix = inv_matrices[i]
+                            
+                            # Apply color transfer
+                            swapped_crop = apply_color_transfer(orig_crop, swapped_crop)
+                            
+                            # Restore
+                            if self.config.enable_restoration and self.restorer:
+                                swapped_crop = self.restorer.restore(swapped_crop)
+                            
+                            # Temporal Stabilize
+                            if self.config.enable_temporal_stabilization and self.temporal_stabilizer:
+                                swapped_crop = self.temporal_stabilizer.stabilize(swapped_crop, target_track_id)
+                                
+                            # Paste back
+                            mask_height, mask_width = swapped_crop.shape[:2]
+                            mask = np.ones((mask_height, mask_width, 1), dtype=np.float32)
+                            margin = int(min(mask_height, mask_width) * 0.1)
+                            mask[:margin, :] *= np.linspace(0, 1, margin).reshape(-1, 1, 1)
+                            mask[-margin:, :] *= np.linspace(1, 0, margin).reshape(-1, 1, 1)
+                            mask[:, :margin] *= np.linspace(0, 1, margin).reshape(1, -1, 1)
+                            mask[:, -margin:] *= np.linspace(1, 0, margin).reshape(1, -1, 1)
+                            blur_size = (margin * 2) | 1
+                            mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+                            if len(mask.shape) == 2: mask = np.expand_dims(mask, axis=-1)
+                            
+                            paste_w, paste_h = batch_frames[orig_idx].shape[1], batch_frames[orig_idx].shape[0]
+                            inv_mask = cv2.warpAffine(mask, inv_matrix, (paste_w, paste_h))
+                            if len(inv_mask.shape) == 2: inv_mask = np.expand_dims(inv_mask, axis=-1)
+                            
+                            inv_crop = cv2.warpAffine(swapped_crop, inv_matrix, (paste_w, paste_h), borderMode=cv2.BORDER_REPLICATE)
+                            
+                            batch_frames[orig_idx] = (batch_frames[orig_idx] * (1 - inv_mask) + inv_crop * inv_mask).astype(np.uint8)
+
+                            if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
+                                self.artifact_store.save(f"frame_{frame_idx}_final_crop.jpg", swapped_crop, job_artifact_dir / "07_final")
+
+                    results = list(batch_frames)
+                    batch_frames.clear()
+                    batch_faces.clear()
+                    batch_indices.clear()
+                    return results
+
                 for frame_idx, frame in enumerate(self.decoder.frames(asset)):
-                    # Get the face for this frame from the best track
                     target_face = None
                     for face in best_track.faces:
                         if face.frame_index == frame_idx:
                             target_face = face
                             break
-                            
-                    if target_face is not None:
-                        # 1. Align & Crop
-                        crop, inv_matrix = self.aligner.align(frame, target_face)
-                        if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
-                            self.artifact_store.save(f"frame_{frame_idx}_crop.jpg", crop, job_artifact_dir / "03_alignment")
-                        
-                        # 2. Swap
-                        swapped_crop = self.swapper.swap(source_embedding, crop)
-                        
-                        # Apply color transfer to match target lighting
-                        swapped_crop = apply_color_transfer(crop, swapped_crop)
-                        
-                        if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
-                            self.artifact_store.save(f"frame_{frame_idx}_swapped.jpg", swapped_crop, job_artifact_dir / "04_swap")
-                        
-                        # 3. Restore (optional)
-                        if self.config.enable_restoration and self.restorer:
-                            swapped_crop = self.restorer.restore(swapped_crop)
-                            if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
-                                self.artifact_store.save(f"frame_{frame_idx}_restored.jpg", swapped_crop, job_artifact_dir / "05_restore")
-                            
-                        # 4. Temporal Stabilize (optional)
-                        if self.config.enable_temporal_stabilization and self.temporal_stabilizer:
-                            swapped_crop = self.temporal_stabilizer.stabilize(swapped_crop, target_track_id)
-                            if self.config.save_artifacts and self.artifact_store and frame_idx % 30 == 0:
-                                self.artifact_store.save(f"frame_{frame_idx}_stabilized.jpg", swapped_crop, job_artifact_dir / "06_temporal")
-
-                            
-                        # 5. Paste back
-                        # Create a soft mask based on the crop size to avoid box artifacts.
-                        # We use a box mask with blurred edges.
-                        mask_height, mask_width = swapped_crop.shape[:2]
-                        mask = np.ones((mask_height, mask_width, 1), dtype=np.float32)
-                        
-                        # Add some padding to the mask to avoid sharp edges at the very boundary
-                        # (The crop might already have replicate padding, but a soft transition is better)
-                        margin = int(min(mask_height, mask_width) * 0.1)
-                        mask[:margin, :] *= np.linspace(0, 1, margin).reshape(-1, 1, 1)
-                        mask[-margin:, :] *= np.linspace(1, 0, margin).reshape(-1, 1, 1)
-                        mask[:, :margin] *= np.linspace(0, 1, margin).reshape(1, -1, 1)
-                        mask[:, -margin:] *= np.linspace(1, 0, margin).reshape(1, -1, 1)
-                        
-                        # Further blur the mask for a smoother transition
-                        blur_size = (margin * 2) | 1 # Ensure odd
-                        mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
-                        if len(mask.shape) == 2:
-                            mask = np.expand_dims(mask, axis=-1)
-                        
-                        paste_width = frame.shape[1]
-                        paste_height = frame.shape[0]
-                        
-                        # Warp mask and swapped crop back to original frame coordinates
-                        inv_mask = cv2.warpAffine(mask, inv_matrix, (paste_width, paste_height))
-                        inv_mask = np.clip(inv_mask, 0, 1)
-                        if len(inv_mask.shape) == 2:
-                            inv_mask = np.expand_dims(inv_mask, axis=-1)
-                            
-                        inv_crop = cv2.warpAffine(swapped_crop, inv_matrix, (paste_width, paste_height), borderMode=cv2.BORDER_REPLICATE)
-                        
-                        # Blend the swapped crop with the original frame using the mask
-                        frame = (frame * (1 - inv_mask) + inv_crop * inv_mask).astype(np.uint8)
-
+                    
+                    batch_frames.append(frame)
+                    batch_faces.append(target_face)
+                    batch_indices.append(frame_idx)
+                    
+                    if len(batch_frames) >= batch_size:
+                        for processed_frame in flush_batch():
+                            frames_processed += 1
+                            yield processed_frame
+                
+                # Final flush
+                for processed_frame in flush_batch():
                     frames_processed += 1
-                    yield frame
+                    yield processed_frame
             
             # Encode
             self.encoder.encode(process_frames(), asset, output_path)
