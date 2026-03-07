@@ -1,80 +1,76 @@
-# MorphFlow Swap Engine Plan
+# MorphFlow Swap Engine — План реализации
 
-## Goal
-Build a new `morphflow-swap-engine` as a strong replacement for the current weak face swap core.
+## Цель
 
-The new engine must:
-- stop depending on weak default FaceFusion behavior as the main quality path
-- use stronger face detection, tracking, swapping, restoration, and temporal stabilization
-- be designed for a server with RTX 5090, 32 GB VRAM, 31 GB RAM
-- be modular so agents can replace individual technologies without rewriting the whole engine
-- integrate back into MorphFlow through a stable internal adapter/API layer
+Собрать новый `morphflow-swap-engine` как замену текущему слабому ядру face swap.
 
-This plan is written for execution by Codex, Cursor, Claude Code, and other agents.
-
----
-
-## Product direction
-
-We are not doing a cosmetic refactor.
-
-We are building a new engine with these priorities:
-1. stronger face swap quality on real videos
-2. more stable target face selection across frames
-3. less flicker and less identity drift
-4. better behavior on small and imperfect faces than the current stack
-5. efficient use of RTX 5090 resources
-6. clean observability, benchmarking, and debug artifacts
-7. production-ready integration path back into MorphFlow
+Новый движок должен:
+- перестать зависеть от дефолтного поведения FaceFusion
+- использовать современный стек: детекция, трекинг, swap, восстановление, temporal
+- быть заточен под сервер с RTX 5090, 32 GB VRAM, 31 GB RAM
+- быть модульным — замена одной технологии не ломает весь движок
+- интегрироваться обратно в MorphFlow через адаптер
 
 ---
 
-## Strategic decision
+## Почему форкаем FaceFusion
 
-We are not patching random pieces of the existing weak swap flow forever.
-
-We will:
-1. fork the current repository
-2. create a dedicated engine module named `morphflow-swap-engine`
-3. keep the current API/pipeline shell only where useful
-4. replace the core CV stack step by step with stronger components
-5. validate progress through benchmark-first execution, not vibes
-
----
-
-## High-level execution phases
-
-### Phase 0. Fork and freeze baseline
-Objective: create a clean execution base.
-
-Tasks:
-- Fork current MorphFlow repository.
-- Create new default branch for engine work, for example:
-  - `main` remains stable
-  - `feature/swap-engine-foundation`
-- Tag current state as baseline, for example:
-  - `baseline-facefusion-old`
-- Preserve current pipeline for comparison runs.
-- Do not delete the old implementation immediately.
-
-Deliverables:
-- forked repo
-- baseline tag
-- clean branch strategy
-- README section explaining baseline vs new engine
-
-Acceptance criteria:
-- project still runs at baseline state
-- old pipeline can still be invoked for comparison
+| Проблема | Причина |
+|----------|---------|
+| Лицо не меняется визуально | `inswapper_128` работает в 128px — слишком мало деталей |
+| Детектор находит 4 лица вместо 1 | `RetinaFace` даёт ложные срабатывания на фоне и руках |
+| Мерцание между кадрами | Нет temporal consistency — каждый кадр обрабатывается независимо |
+| Слабый enhancer | `GFPGAN 1.4` устарел, артефакты на коже |
+| Слабое использование GPU | Нет батчинга, нет fp16, нет torch.compile |
 
 ---
 
-### Phase 1. Engine foundation and architecture skeleton
-Objective: create the new modular engine skeleton before hard swapping technologies.
+## Новый стек
 
-Create a new package, for example:
+| Компонент | Было | Стало |
+|-----------|------|-------|
+| Детектор | RetinaFace | InsightFace `buffalo_l` (SCRFD) |
+| Swap-модель | inswapper_128 (128px) | Ghost (512px), SimSwap++ как fallback |
+| Enhancer | GFPGAN 1.4 | CodeFormer (fidelity_weight=0.7) |
+| Temporal | отсутствует | FILM (Frame Interpolation for Large Motion) |
+| Precision | fp32, 1 кадр | fp16 + torch.compile + batch 32 кадра |
+| VRAM | ~4GB | ~18-22GB (5090: 32GB) |
 
-```text
+---
+
+## Стратегическое решение
+
+Не патчим куски старого пайплайна. Вместо этого:
+
+1. Форкаем текущий репозиторий
+2. Создаём отдельный модуль `morphflow-swap-engine`
+3. Оставляем текущий API/pipeline shell где полезно
+4. Поэтапно заменяем CV-стек на новые компоненты
+5. Старый движок остаётся как fallback на время перехода
+
+---
+
+## Фазы реализации
+
+### Фаза 0. Форк и фиксация baseline
+
+Задачи:
+- Форкнуть текущий MorphFlow
+- Создать ветку `feature/swap-engine-foundation`
+- Тегнуть текущее состояние как `baseline-facefusion-old`
+- Не удалять старую реализацию — она нужна для сравнения
+
+Результат:
+- Форкнутый репо с чистой веткой
+- Старый пайплайн всё ещё можно запустить
+
+---
+
+### Фаза 1. Скелет нового движка
+
+Создать пакет:
+
+```
 src/morphflow_swap_engine/
     core/
         entities/
@@ -84,7 +80,6 @@ src/morphflow_swap_engine/
     application/
         use_cases/
         orchestrators/
-        benchmark/
     infrastructure/
         detection/
         tracking/
@@ -102,14 +97,14 @@ src/morphflow_swap_engine/
     tests/
 ```
 
-Rules:
-- one module = one responsibility
-- no cyclic dependencies
-- contracts first, concrete implementations second
-- all external model/tool wrappers live in infrastructure
-- old MorphFlow pipeline should call the new engine through an adapter, not by reaching into internals
+Правила:
+- Один модуль = одна ответственность
+- Без циклических зависимостей
+- Сначала контракты, потом реализации
+- Все обёртки моделей живут в infrastructure
+- Старый MorphFlow вызывает новый движок только через адаптер
 
-Core contracts to define first:
+Контракты:
 - `IFaceDetector`
 - `IFaceTracker`
 - `IFaceAligner`
@@ -119,9 +114,8 @@ Core contracts to define first:
 - `IVideoDecoder`
 - `IVideoEncoder`
 - `IArtifactStore`
-- `IBenchmarkRunner`
 
-Core entities/value objects to define:
+Entities / value objects:
 - `ReferenceFaceAsset`
 - `TargetVideoAsset`
 - `DetectedFace`
@@ -129,405 +123,265 @@ Core entities/value objects to define:
 - `SwapRequest`
 - `SwapResult`
 - `StageArtifact`
-- `BenchmarkCase`
-- `BenchmarkRun`
 - `EngineProfile`
 - `RuntimeReport`
 
-Deliverables:
-- empty but working package skeleton
-- typed contracts
-- config layer
-- adapter entrypoint from current MorphFlow code
+Результат:
+- Пустой но рабочий пакет
+- Типизированные контракты
+- Конфиг
+- Адаптер-точка входа из текущего MorphFlow
 
-Acceptance criteria:
-- package imports cleanly
-- type checker passes on foundation layer
-- no hard-coded model logic inside application/core layers
+Критерии:
+- Пакет импортируется без ошибок
+- Type checker проходит
+- Нет хардкода моделей в application/core слоях
 
 ---
 
-### Phase 2. Benchmark harness first
-Objective: stop guessing and create a fast repeatable comparison harness.
+### Фаза 2. Замена детектора
 
-This phase is mandatory before deep model replacement.
+Текущая проблема: `RetinaFace` слабый, ложные срабатывания.
 
-Build a benchmark subsystem that can run multiple engine profiles on the same inputs and save comparable outputs.
+Замена: **InsightFace buffalo_l** (SCRFD backbone)
 
-Create benchmark dataset structure:
+```python
+import insightface
 
-```text
-datasets/
-    references/
-        ref_01.jpg
-        ref_02.jpg
-        ref_03.jpg
-    targets/
-        target_01.mp4
-        target_02.mp4
-        target_03.mp4
-    cases/
-        benchmark_cases.json
+app = insightface.app.FaceAnalysis(
+    name='buffalo_l',
+    providers=['CUDAExecutionProvider']
+)
+app.prepare(ctx_id=0, det_thresh=0.6, det_size=(640, 640))
+faces = app.get(frame)
 ```
 
-Each benchmark case should define:
-- reference image path
-- target video path
-- clip range or full video mode
-- expected target face count scenario
-- notes
+Что должен уметь детектор:
+- Детектировать лица от 8px (vs 20px у RetinaFace)
+- Настраиваемый confidence threshold
+- 5 ключевых точек + embedding для идентификации
+- Batch-детекция по кадрам
+- Выбор главного лица по размеру, confidence, центральности
+- Фильтрация ложных срабатываний
 
-Benchmark runner must support:
-- running only first N seconds of video
-- running multiple engine profiles on the same case
-- saving stage artifacts per run
-- saving command/config snapshot
-- saving timing and VRAM statistics if available
-- saving final outputs in deterministic folder layout
+Анализ референса:
+- Размер изображения, количество лиц, primary face box, confidence, face size ratio, warnings
 
-Suggested output structure:
+Анализ таргета:
+- Сэмплированные кадры, детекции на кадр, face size ratios, warnings
 
-```text
-storage/benchmarks/
-    <run_id>/
-        case.json
-        profile.json
-        metrics.json
-        logs/
-        artifacts/
-            01_detection/
-            02_tracking/
-            03_swap/
-            04_restore/
-            05_temporal/
-            final/
+Результат:
+- Модуль детектора за `IFaceDetector`
+- Модуль фильтрации
+- Анализатор референса и таргета
+
+---
+
+### Фаза 3. Трекинг
+
+Критическая фаза. Текущий FaceFusion обрабатывает каждый кадр как отдельную вселенную.
+
+`IFaceTracker` должен:
+- Связывать детекции между кадрами
+- Находить доминантный трек целевого лица
+- Держать стабильный выбор идентичности через весь клип
+- Экспортировать кропы и метаданные трека
+
+Выходные данные трека:
+- Track ID
+- Box на каждый кадр
+- Landmarks на каждый кадр (если есть)
+- История confidence
+- Длина трека, количество пропущенных кадров
+- Stability score
+
+Политика выбора главного трека:
+- Стабильность через кадры
+- Средний размер лица
+- Средний confidence
+- Центральность
+
+Результат:
+- Модуль трекинга
+- Скоринг треков
+- Политика выбора целевого лица
+
+---
+
+### Фаза 4. Alignment и crop pipeline
+
+Свопер работает лучше когда таргет и референс нормализованы.
+
+Задачи:
+- Выравнивание референса по landmarks
+- Консистентные кропы таргета по трекам
+- Нормализация размеров под ожидания свопера
+- Настраиваемый margin кропа
+- Сохранение достаточного контекста (лоб, челюсть)
+- Поддержка crop-to-swap для мелких лиц в полном кадре
+
+Результат:
+- Модуль выравнивания
+- Модуль crop-стратегии
+
+---
+
+### Фаза 5. Замена swap-модели
+
+Текущая проблема: `inswapper_128` — 128px, мало деталей.
+
+Замена: **Ghost (512px)** — основной, **SimSwap++** — fallback.
+
+```python
+# Batch processing на 5090
+batch_size = 32  # 32GB позволяет
+for batch in chunks(frames, batch_size):
+    swapped = ghost_model.swap_batch(batch, source_embedding)
 ```
 
-Metrics to record initially:
-- total runtime
-- per-stage runtime
-- processed frames count
-- detected face count consistency
-- tracked face continuity
-- swap output existence
-- restoration stage enabled/disabled
-- temporal stage enabled/disabled
-- warnings
-
-Do not over-engineer metrics yet.
-Main purpose is quick visual and engineering comparison.
-
-Deliverables:
-- benchmark CLI
-- benchmark config schema
-- benchmark output structure
-- 3-5 benchmark cases
-
-Acceptance criteria:
-- one command can benchmark multiple profiles on the same case
-- artifacts are easy to inspect
-- runs are reproducible
-
----
-
-### Phase 3. Stronger detection stack
-Objective: replace weak precheck-style face detection with a stronger modern detector.
-
-Current weakness:
-- old rough precheck logic is too noisy and too weak for production engine decisions
-
-Plan:
-- add a stronger detector implementation based on the stack chosen in the architecture plan
-- keep detector behind `IFaceDetector`
-- implement confidence thresholds and sane filtering
-- support batch frame detection
-- support selecting top faces by confidence, size, and centrality
-
-Detector requirements:
-- detect faces on reference image
-- detect faces across sampled target frames
-- support returning landmarks if available
-- support face crop extraction
-- support confidence score
-
-Filtering requirements:
-- prefer primary face based on configurable policy:
-  - largest consistent face
-  - center-most consistent face
-  - tracked identity continuity
-- ignore implausible tiny detections when a dominant face exists
-- reduce false positives in reference analysis
-
-Reference analysis should report:
-- image size
-- face count
-- primary face box
-- confidence
-- face size ratio
-- warnings
-
-Target analysis should report:
-- sampled frames
-- detections per frame
-- face size ratios
-- continuity hints
-- warnings
-
-Deliverables:
-- new detector module
-- filtering policy module
-- reference analyzer
-- target analyzer
-
-Acceptance criteria:
-- detector beats current precheck behavior on benchmark cases
-- false positives are reduced
-- debug artifacts show selected boxes and rejected boxes
-
----
-
-### Phase 4. Tracking layer
-Objective: stop treating each frame like a disconnected universe.
-
-This phase is critical.
-
-Build a `IFaceTracker` implementation that:
-- links detections across frames
-- finds the dominant target face track
-- keeps a stable identity selection through the clip
-- exports tracked crops and metadata
-
-Tracking outputs should include:
-- track id
-- box per frame
-- landmarks per frame if available
-- detection confidence history
-- track length
-- missing frame count
-- stability score
-
-Selection policy:
-- choose the best primary track based on:
-  - persistence across frames
-  - average face size
-  - average confidence
-  - center bias
-- fall back to largest stable track if needed
-
-Artifacts to save:
-- preview frames with tracking boxes
-- JSON track summaries
-- extracted face crops for the chosen track
-
-Deliverables:
-- tracking module
-- track scoring module
-- target face selection policy
-
-Acceptance criteria:
-- same main face is selected consistently across benchmark clip
-- track summary explains why a target was chosen
-- engine no longer relies on naive `face-selector-mode one` style logic
-
----
-
-### Phase 5. Alignment and crop pipeline
-Objective: feed the swapper cleaner inputs.
-
-Implement alignment/crop stage:
-- align reference face using detected landmarks
-- align tracked target crops consistently
-- normalize crop sizes to profile-specific expectations
-- support optional expanded crop margin
-
-Why this matters:
-- the swapper performs better when the target and reference are normalized
-- small faces in full-frame video need crop amplification
-
-Requirements:
-- crop around tracked face with configurable margin
-- preserve enough forehead/jaw context
-- avoid over-tight crops
-- support crop-to-swap workflow for videos where face is too small in full frame
-
-Deliverables:
-- face alignment module
-- crop strategy module
-- crop preview artifacts
-
-Acceptance criteria:
-- benchmark artifacts clearly show normalized aligned reference and target crops
-- crop mode improves usable face size for swap stage
-
----
-
-### Phase 6. Swapper replacement layer
-Objective: replace the weak default swap core with stronger swappers under one contract.
-
-Important rule:
-- do not hard-code belief that one model is the winner
-- implement swappers behind `IFaceSwapper`
-- benchmark them through the same harness
-
-Profiles to support initially:
+Профили:
 - `balanced`
 - `high_quality`
 - `aggressive`
 
-Swapper adapter responsibilities:
-- load selected model/backend
-- receive aligned reference and target crops or sequences
-- run swap
-- return swapped frames/crops
-- expose runtime metadata
+Каждый свопер-модуль:
+- Config schema
+- Warmup/load
+- Inference
+- Memory-safe batch
+- Артефакты выхода
 
-Each swapper module should have:
-- config schema
-- warmup/load logic
-- inference logic
-- memory-safe batch logic
-- output artifact hooks
+Требования:
+- Своперы за `IFaceSwapper`
+- Переключение профиля без изменения архитектуры
+- Сохранение raw-кропов/фреймов до restoration
 
-Minimum implementation plan:
-1. integrate the stack selected by the architecture proposal as primary candidate
-2. keep one fallback swapper profile for comparison
-3. add profile toggles in config/CLI
-
-Artifacts to save:
-- raw swapped crops/frames before restoration
-- per-batch logs
-- runtime stats
-
-Deliverables:
-- primary swapper implementation
-- fallback swapper implementation or stub-ready adapter
-- profile registry
-
-Acceptance criteria:
-- benchmark can run multiple swappers on the same case
-- outputs are directly comparable
-- engine can switch swapper without architecture changes
+Результат:
+- Primary swapper (Ghost)
+- Fallback swapper (SimSwap++ или stub)
+- Реестр профилей
 
 ---
 
-### Phase 7. Restoration layer
-Objective: improve face detail only after the swap stage is isolated and measurable.
+### Фаза 6. Restoration
 
-Build `IFaceRestorer` layer with ON/OFF support.
+Текущая проблема: `GFPGAN 1.4` устарел, артефакты на коже.
 
-Rules:
-- restoration must be optional
-- benchmark must support swap-only vs swap+restore comparison
-- restoration must not be forced during first-line debugging
+Замена: **CodeFormer** (fidelity_weight=0.7)
 
-Profiles to support:
-- `off`
-- `standard`
-- `high_quality`
+```python
+codeformer.enhance(
+    face_img,
+    fidelity_weight=0.7,
+    has_aligned=False,
+    only_center_face=True
+)
+```
 
-Responsibilities:
-- restore swapped face details
-- preserve identity as much as possible
-- avoid over-smoothing or reverting toward target identity
+Профили:
+- `off` — отключено
+- `standard` — fidelity 0.7
+- `high_quality` — fidelity 0.5
 
-Artifacts:
-- restored crops/frames
-- before/after restore comparison crops
+Правила:
+- Restoration опциональна
+- Можно отключить глобально для отладки
+- Не должна over-smoothить или возвращать identity таргета
 
-Deliverables:
-- restoration adapter
-- restoration profile config
-- benchmark toggle support
-
-Acceptance criteria:
-- restore ON/OFF can be compared quickly
-- restoration stage can be disabled globally for debugging
+Результат:
+- Restoration за `IFaceRestorer`
+- Профильный конфиг
+- ON/OFF поддержка
 
 ---
 
-### Phase 8. Temporal stabilization layer
-Objective: reduce flicker, frame-to-frame identity drift, and unstable face texture.
+### Фаза 7. Temporal stabilization
 
-Build `ITemporalStabilizer` as a dedicated stage.
+Текущая проблема: полностью отсутствует. Мерцание между кадрами — алгоритм TikTok это детектирует.
 
-Responsibilities:
-- operate after swap or after restore depending on selected profile
-- smooth frame-to-frame variation
-- reduce temporal identity jitter
-- reduce texture flicker
+Замена: **FILM** (Frame Interpolation for Large Motion)
 
-Requirements:
-- keep module isolated
-- support disable/enable by profile
-- save stage artifacts for review
+Задачи:
+- Сглаживание frame-to-frame вариаций
+- Уменьшение identity drift
+- Уменьшение текстурного мерцания
+- Работает после swap или после restore в зависимости от профиля
 
-Artifacts:
-- pre-temporal clip
-- post-temporal clip
-- frame diff summaries if cheap enough
+Правила:
+- Модуль изолирован
+- Включается/выключается по профилю
 
-Deliverables:
-- temporal module
-- profile integration
-- debug artifacts
-
-Acceptance criteria:
-- visible flicker reduction on benchmark clips
-- stage can be turned off for diagnosis
+Результат:
+- Модуль temporal за `ITemporalStabilizer`
+- Интеграция с профилями
 
 ---
 
-### Phase 9. Video reconstruction and compositing pipeline
-Objective: rebuild final video cleanly after swap stages.
+### Фаза 8. Реконструкция видео
 
-At this phase, the engine should support:
-- swap-only output
-- swap+restore output
-- swap+restore+temporal output
-- optional downstream composition hooks
+На этом этапе движок должен поддерживать:
+- swap-only выход
+- swap + restore
+- swap + restore + temporal
+- опциональные downstream hooks
 
-Video layer requirements:
-- robust frame decoding
-- deterministic frame ordering
-- audio preservation strategy
-- clean encode pipeline
-- high-quality export settings configurable by profile
+Требования к видео-слою:
+- Робастный decode кадров
+- Детерминированный порядок кадров
+- Сохранение аудио
+- Качественный encode с настраиваемыми параметрами по профилю
 
-If crop-to-swap mode is used:
-- recomposite swapped face region back into the original full frame cleanly
-- preserve alignment and placement
-- avoid visible patch edges
+Для crop-to-swap режима:
+- Реинтеграция свопнутой области обратно в полный кадр
+- Сохранение позиционирования
+- Без видимых границ патча
 
-Deliverables:
-- video decoder module
-- video encoder module
-- crop reintegration module if needed
-
-Acceptance criteria:
-- final reconstructed videos are stable and playable
-- audio handling policy is explicit
-- no frame order corruption
+Результат:
+- Video decoder модуль
+- Video encoder модуль
+- Crop reintegration модуль
 
 ---
 
-### Phase 10. Diagnostics and observability
-Objective: make the new engine easy to debug on server and locally.
+### Фаза 9. Оптимизация под RTX 5090
 
-This phase should reuse good ideas from the recent diagnostics pass.
+Цель: выжать железо, а не работать как на ноутбуке.
 
-Required diagnostics:
-- stage records
-- warnings
-- artifacts manifest
-- profile used
-- selected detector/tracker/swapper/restorer/temporal modules
-- per-stage timing
-- environment snapshot
-- model version snapshot
+```python
+# torch.compile — ускорение ~30% на Ampere+
+model = torch.compile(ghost_model, mode='max-autotune')
 
-Suggested debug structure:
+# fp16 — в 2x быстрее, в 2x меньше VRAM
+with torch.autocast(device_type='cuda', dtype=torch.float16):
+    result = model(batch)
 
-```text
+# Batch 32 кадра за раз вместо по одному
+```
+
+Оптимизации:
+- fp16 где безопасно
+- Batched inference
+- Frame chunking
+- Предзагрузка моделей
+- Memory-aware пресеты
+- torch.compile для стабильных путей
+
+Профили:
+- `balanced`
+- `quality_max`
+- `throughput_max`
+
+Результат:
+- GPU-aware runtime config
+- Стабильная работа на 5090
+
+---
+
+### Фаза 10. Диагностика
+
+Структура debug-артефактов:
+
+```
 storage/debug/<job_id>/
     metadata/
     logs/
@@ -541,408 +395,135 @@ storage/debug/<job_id>/
         07_reconstruction/
 ```
 
-Deliverables:
-- artifact store
-- runtime report models
-- debug manifest
-- clean logging strategy
+Что записывать:
+- Stage records
+- Warnings
+- Artifacts manifest
+- Использованный профиль
+- Выбранные модули (detector/tracker/swapper/restorer/temporal)
+- Тайминг по стадиям
+- Снепшот окружения и версий моделей
 
-Acceptance criteria:
-- every failed or degraded job explains itself
-- every benchmark run is inspectable without guesswork
-
----
-
-### Phase 11. RTX 5090 optimization pass
-Objective: make the engine exploit available hardware instead of acting like a low-end laptop pipeline.
-
-Optimization targets:
-- fp16 where safe
-- batched inference where model supports it
-- frame chunking
-- preloaded models
-- async/staged buffering where helpful
-- memory-aware profile presets
-- optional compilation/optimization for stable production paths
-
-Requirements:
-- optimization must not destroy correctness
-- benchmark runs must include timing comparisons
-- no hidden magic toggles without config entries
-
-Profiles to define:
-- `balanced`
-- `quality_max`
-- `throughput_max`
-
-Potential config areas:
-- batch size
-- crop resolution
-- target processing FPS cap
-- restore stage batch size
-- temporal stage chunk size
-- memory limit guardrails
-
-Deliverables:
-- GPU-aware runtime config
-- performance notes
-- benchmark comparison tables
-
-Acceptance criteria:
-- engine runs stably on 5090
-- memory usage is acceptable
-- throughput improves relative to naive execution
+Результат:
+- Artifact store
+- Runtime report
+- Debug manifest
 
 ---
 
-### Phase 12. MorphFlow integration adapter
-Objective: plug the new engine back into the MorphFlow product cleanly.
+### Фаза 11. Интеграция с MorphFlow
 
-Rules:
-- current frontend/API should not need chaotic rewrites
-- existing process flow should call the new engine through an adapter
-- old engine path may remain as fallback behind a flag during transition
+Правила:
+- Фронтенд и API не переписываются
+- Текущий flow вызывает новый движок через адаптер
+- Старый движок остаётся за флагом на время перехода
 
-Integration requirements:
-- process request -> new engine request mapping
-- profile selection support
-- swap-only support
-- diagnostics exposure
-- benchmark/dev flags hidden from normal production use
+Требования:
+- Маппинг process request → new engine request
+- Поддержка выбора профиля
+- swap-only режим
+- Диагностика пробрасывается в существующий API
 
-Deliverables:
-- MorphFlow adapter layer
-- config flags for engine backend selection
-- migration notes
-
-Acceptance criteria:
-- current MorphFlow can invoke the new engine
-- feature flag can switch between old and new engine during rollout
+Результат:
+- MorphFlow адаптер
+- Feature flag для выбора движка
+- Migration notes
 
 ---
 
-### Phase 13. Validation and rollout
-Objective: verify that the new engine is worth keeping.
+## Архитектура репозитория
 
-Validation flow:
-1. run benchmark suite on baseline old stack
-2. run benchmark suite on new stack
-3. compare outputs visually and operationally
-4. identify winning profile
-5. run server acceptance tests
-6. switch default engine only after evidence
-
-Acceptance checklist:
-- face swap visibly stronger on core benchmark cases
-- tracking is more stable
-- flicker is lower or at least not worse
-- debugability is better than baseline
-- server execution is stable
-- integration path works through existing MorphFlow shell
-
----
-
-## Repository plan
-
-Suggested repository layout after transition:
-
-```text
+```
 repo/
     src/
         morphflow_swap_engine/
-    datasets/
-        benchmark/
     docs/
         architecture/
-        benchmarking/
         deployment/
     scripts/
-        benchmark/
         debug/
         deployment/
     tests/
         unit/
         integration/
-        benchmark/
 ```
 
 ---
 
-## Execution order for agents
-
-### Agent Wave 1. Foundation
-Scope:
-- Phase 0
-- Phase 1
-- initial docs
-
-Output:
-- package skeleton
-- contracts
-- config
-- adapter entrypoint
-
-### Agent Wave 2. Benchmark harness
-Scope:
-- Phase 2
-- benchmark CLI
-- storage layout
-- run manifests
-
-Output:
-- benchmark runner
-- sample cases
-- run reports
-
-### Agent Wave 3. Detection and tracking
-Scope:
-- Phase 3
-- Phase 4
-- Phase 5
-
-Output:
-- detector
-- tracker
-- alignment/crop
-- visual debug artifacts
-
-### Agent Wave 4. Swapper and restoration
-Scope:
-- Phase 6
-- Phase 7
-
-Output:
-- primary swapper
-- fallback/comparison swapper
-- restoration layer
-- ON/OFF comparison support
-
-### Agent Wave 5. Temporal and reconstruction
-Scope:
-- Phase 8
-- Phase 9
-
-Output:
-- temporal stabilization
-- reconstruction/export
-
-### Agent Wave 6. Diagnostics and optimization
-Scope:
-- Phase 10
-- Phase 11
-
-Output:
-- debug system
-- GPU optimization profiles
-
-### Agent Wave 7. Integration and rollout
-Scope:
-- Phase 12
-- Phase 13
-
-Output:
-- MorphFlow integration
-- migration plan
-- rollout checklist
-
----
-
-## Rules for all agents
-
-1. Do not rewrite the whole repo blindly.
-2. Do not mix architecture, benchmark, and model changes in one giant commit.
-3. Every stage must preserve a runnable state.
-4. Every new model/tool must be behind a clean contract.
-5. Every stage must add artifacts/logging for inspection.
-6. Do not silently remove the old path until the new path wins.
-7. Do not invent success without benchmark evidence.
-8. Keep code modular and replaceable.
-9. Use Windows-friendly local development instructions where needed.
-10. Comments in code must be English only.
-
----
-
-## Commit strategy
-
-Suggested commit sequence:
+## Порядок коммитов
 
 1. `chore: fork baseline and tag legacy swap pipeline`
 2. `feat: add morphflow swap engine package skeleton and core contracts`
-3. `feat: add benchmark runner and benchmark case schema`
-4. `feat: add detector abstraction and first detector implementation`
-5. `feat: add target face tracking and selection strategy`
-6. `feat: add alignment and crop pipeline`
-7. `feat: add primary swapper integration`
-8. `feat: add swapper profile registry and fallback comparison path`
-9. `feat: add restoration layer with profile toggles`
-10. `feat: add temporal stabilization stage`
-11. `feat: add reconstruction and export pipeline`
-12. `feat: add diagnostics manifest and debug artifact store`
-13. `feat: add gpu runtime profiles for rtx 5090`
-14. `feat: integrate new engine into morphflow through adapter`
-15. `docs: add benchmark and rollout documentation`
-16. `test: add integration and benchmark verification coverage`
+3. `feat: add detector — InsightFace buffalo_l behind IFaceDetector`
+4. `feat: add target face tracking and selection strategy`
+5. `feat: add alignment and crop pipeline`
+6. `feat: add Ghost swapper behind IFaceSwapper`
+7. `feat: add swapper profile registry and SimSwap++ fallback`
+8. `feat: add CodeFormer restoration layer with profile toggles`
+9. `feat: add FILM temporal stabilization stage`
+10. `feat: add video reconstruction and export pipeline`
+11. `feat: add diagnostics manifest and debug artifact store`
+12. `feat: add gpu runtime profiles for rtx 5090`
+13. `feat: integrate new engine into morphflow through adapter`
+14. `docs: add architecture and deployment documentation`
 
 ---
 
-## Detailed technical checklist
+## Волны выполнения
 
-### Foundation checklist
-- [ ] fork repo
-- [ ] create baseline tag
-- [ ] add new engine package
-- [ ] add contracts
-- [ ] add config schema
-- [ ] add adapter entrypoint
+### Волна 1 — Фундамент
+Фазы 0, 1. Форк, скелет, контракты, конфиг, адаптер.
 
-### Benchmark checklist
-- [ ] benchmark case schema
-- [ ] benchmark CLI
-- [ ] benchmark output folder layout
-- [ ] benchmark manifest JSON
-- [ ] sample benchmark cases
-- [ ] benchmark docs
+### Волна 2 — Детекция и трекинг
+Фазы 2, 3, 4. Детектор, трекер, alignment/crop.
 
-### Detection checklist
-- [ ] detector interface
-- [ ] detector implementation
-- [ ] reference analyzer
-- [ ] target analyzer
-- [ ] false positive filtering
-- [ ] detection artifacts
+### Волна 3 — Swap и restoration
+Фазы 5, 6. Ghost свопер, CodeFormer restoration.
 
-### Tracking checklist
-- [ ] face track builder
-- [ ] track scorer
-- [ ] primary track selector
-- [ ] tracking artifacts
-- [ ] JSON track summaries
+### Волна 4 — Temporal и реконструкция
+Фазы 7, 8. FILM stabilization, видео export.
 
-### Alignment/crop checklist
-- [ ] reference alignment
-- [ ] target crop extraction
-- [ ] configurable crop margin
-- [ ] crop-to-swap mode
-- [ ] crop preview artifacts
+### Волна 5 — Оптимизация и диагностика
+Фазы 9, 10. GPU профили, debug артефакты.
 
-### Swapper checklist
-- [ ] primary swapper adapter
-- [ ] fallback swapper adapter or abstraction-ready slot
-- [ ] profile registry
-- [ ] raw swap artifacts
-- [ ] profile config
-
-### Restoration checklist
-- [ ] restorer interface
-- [ ] ON/OFF mode
-- [ ] restored output artifacts
-- [ ] compare restore enabled vs disabled
-
-### Temporal checklist
-- [ ] temporal interface
-- [ ] temporal implementation
-- [ ] pre/post temporal artifacts
-- [ ] profile toggles
-
-### Reconstruction checklist
-- [ ] video decode layer
-- [ ] video encode layer
-- [ ] audio preservation policy
-- [ ] reintegration logic for crop mode
-- [ ] export config
-
-### Diagnostics checklist
-- [ ] stage records
-- [ ] warnings model
-- [ ] artifacts manifest
-- [ ] runtime report
-- [ ] environment snapshot
-- [ ] model version snapshot
-
-### Optimization checklist
-- [ ] fp16 support
-- [ ] batch inference config
-- [ ] profile-specific runtime config
-- [ ] timing benchmark output
-- [ ] memory guardrails
-
-### Integration checklist
-- [ ] MorphFlow adapter
-- [ ] engine backend feature flag
-- [ ] diagnostics surfaced to existing API
-- [ ] migration note
-- [ ] fallback to old engine retained during transition
+### Волна 6 — Интеграция
+Фаза 11. Адаптер в MorphFlow, feature flag, rollout.
 
 ---
 
-## Testing strategy
+## Правила для всех агентов
 
-### Unit tests
-Must cover:
-- config parsing
-- profile registry
-- detector result filtering
-- track scoring
-- crop calculations
-- artifact manifest creation
-- adapter request mapping
-
-### Integration tests
-Must cover:
-- benchmark runner execution
-- one full swap-only pass
-- one swap+restore pass
-- one swap+restore+temporal pass
-- MorphFlow adapter invocation
-
-### Manual evaluation
-Must cover:
-- visual comparison on benchmark cases
-- identity stability
-- reduced flicker
-- stable target selection
-- performance sanity on RTX 5090
+1. Не переписывать весь репо вслепую
+2. Не мешать архитектуру и замену моделей в одном коммите
+3. Каждая стадия должна оставлять проект в рабочем состоянии
+4. Каждая модель/инструмент за чистым контрактом
+5. Каждая стадия добавляет артефакты/логи для инспекции
+6. Не удалять старый путь пока новый не победит
+7. Код модульный и заменяемый
+8. Локальные инструкции для Windows где нужно
+9. Комментарии в коде только на английском
 
 ---
 
-## Documentation plan
+## Не-цели
 
-Create these docs:
-- `docs/architecture/morphflow_swap_engine_overview.md`
-- `docs/architecture/module_map.md`
-- `docs/benchmarking/benchmark_runner.md`
-- `docs/benchmarking/case_format.md`
-- `docs/deployment/runpod_deploy.md`
-- `docs/deployment/runtime_profiles.md`
-- `docs/migration/legacy_to_new_engine.md`
-
-Each doc must be kept in sync with the implementation.
+Не тратить время сейчас на:
+- Редизайн фронтенда
+- Маркетинговые страницы
+- Масштабный редизайн API не связанный с движком
+- Рандомные рефакторы не связанные с миграцией swap engine
 
 ---
 
-## Non-goals
+## Целевое состояние
 
-Do not spend time right now on:
-- frontend redesign
-- marketing pages
-- broad unrelated API redesign
-- perfect cinema-grade background replacement
-- random refactors unrelated to swap engine migration
+По завершении плана должно быть:
+- Новый `morphflow-swap-engine`
+- Модульный современный CV-стек (InsightFace → Ghost → CodeFormer → FILM)
+- Стабильный трекинг целевого лица
+- Качество swap выше текущего baseline
+- Контролируемые стадии restoration и temporal
+- RTX 5090 оптимизированные runtime профили
+- Чистая интеграция обратно в MorphFlow
 
----
-
-## Final target state
-
-At the end of this plan we must have:
-- a new `morphflow-swap-engine`
-- modular modern CV stack
-- benchmark harness for fast comparison
-- stable target face tracking
-- stronger swap quality than current baseline
-- controllable restoration and temporal stages
-- RTX 5090 optimized runtime profiles
-- clean integration back into MorphFlow
-
-This is the bar.
-No vague “it feels better”.
-The new engine must be stronger, more stable, and easier to debug than the current one.
+Критерий: swap_verification delta > 0.1 (вместо текущих 0.018).
