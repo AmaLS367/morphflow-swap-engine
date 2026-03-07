@@ -1,61 +1,51 @@
-FaceFusion
-==========
+# morphflow-swap-engine
 
-> Industry leading face manipulation platform.
+`morphflow-swap-engine` is the working repository for MorphFlow's next face swap engine.
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/facefusion/facefusion/ci.yml.svg?branch=master)](https://github.com/facefusion/facefusion/actions?query=workflow:ci)
-[![Coverage Status](https://img.shields.io/coveralls/facefusion/facefusion.svg)](https://coveralls.io/r/facefusion/facefusion)
-![License](https://img.shields.io/badge/license-OpenRAIL--AS-green)
+This repository is intentionally starting from a preserved legacy baseline so the team can compare the old pipeline against the new engine as it is built. The goal of this phase is cleanup and adaptation, not a full rewrite of the runtime.
 
+## Current status
 
-Preview
--------
+- The current runtime is still the inherited legacy engine internals under `facefusion/`.
+- The repository surface is being reworked to match the MorphFlow project identity.
+- The detailed execution roadmap lives in `MORPHFLOW_SWAP_ENGINE_PLAN.md`.
+- The untouched upstream baseline is tagged as `baseline-facefusion-old`.
 
-![Preview](https://raw.githubusercontent.com/facefusion/facefusion/master/.github/preview.png?sanitize=true)
+## Project direction
 
+This repository exists to support the phased migration described in `MORPHFLOW_SWAP_ENGINE_PLAN.md`.
 
-Installation
-------------
+Immediate priorities:
 
-Be aware, the [installation](https://docs.facefusion.io/installation) needs technical skills and is not recommended for beginners. In case you are not comfortable using a terminal, our [Windows Installer](http://windows-installer.facefusion.io) and [macOS Installer](http://macos-installer.facefusion.io) get you started.
+1. clean the inherited repository surface
+2. preserve a runnable comparison baseline
+3. prepare a stable base for the new modular swap engine
 
+## Legacy baseline
 
-Usage
------
+The current baseline remains valuable for comparison runs and for reusing pieces of the old pipeline during migration.
 
-Run the command:
+- Internal package namespace is still `facefusion` in this phase.
+- The baseline CLI and config surface are still inherited and will be renamed during the cleanup commits that follow.
+- The license remains unchanged.
 
-```
-python facefusion.py [commands] [options]
+## Running the current baseline
 
-options:
-  -h, --help                                      show this help message and exit
-  -v, --version                                   show program's version number and exit
+Until the runtime rename lands in this cleanup phase, use the inherited commands:
 
-commands:
-    run                                           run the program
-    headless-run                                  run the program in headless mode
-    batch-run                                     run the program in batch mode
-    force-download                                force automate downloads and exit
-    benchmark                                     benchmark the program
-    job-list                                      list jobs by status
-    job-create                                    create a drafted job
-    job-submit                                    submit a drafted job to become a queued job
-    job-submit-all                                submit all drafted jobs to become a queued jobs
-    job-delete                                    delete a drafted, queued, failed or completed job
-    job-delete-all                                delete all drafted, queued, failed and completed jobs
-    job-add-step                                  add a step to a drafted job
-    job-remix-step                                remix a previous step from a drafted job
-    job-insert-step                               insert a step to a drafted job
-    job-remove-step                               remove a step from a drafted job
-    job-run                                       run a queued job
-    job-run-all                                   run all queued jobs
-    job-retry                                     retry a failed job
-    job-retry-all                                 retry all failed jobs
+```powershell
+python facefusion.py --help
+python install.py --help
 ```
 
+The default legacy config template is currently `facefusion.ini`.
 
-Documentation
--------------
+## Development notes
 
-Read the [documentation](https://docs.facefusion.io) for a deep dive.
+- Use `requirements.txt` for runtime dependencies.
+- Cleanup-phase tooling is being modernized with a lighter CI path and updated local lint/type-check commands.
+- Heavy benchmark and model replacement work starts only after this repository cleanup phase is complete.
+
+## Next step after cleanup
+
+The next implementation phase is to create the `morphflow_swap_engine` foundation described in Phase 1 of `MORPHFLOW_SWAP_ENGINE_PLAN.md`, while keeping the legacy runtime callable for comparison.
