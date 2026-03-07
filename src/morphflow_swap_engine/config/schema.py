@@ -16,7 +16,7 @@ class EngineConfig:
     detector_iou_threshold: float = 0.4
 
     # Swap model
-    swap_model_key: str = "hyperswap_1a_256"
+    swap_model_key: str = "ghost_512"
 
     # Optional stages (can be toggled per profile)
     enable_restoration: bool = True
@@ -29,5 +29,5 @@ class EngineConfig:
 
     # I/O
     output_dir: str = "output"
-    artifact_dir: str = "artifacts"
+    artifact_dir: str = "storage/debug"
     save_artifacts: bool = False

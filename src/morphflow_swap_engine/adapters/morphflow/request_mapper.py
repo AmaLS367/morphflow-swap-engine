@@ -10,6 +10,11 @@ from ...core.entities.target_video_asset import TargetVideoAsset
 import numpy as np
 
 
+def _default_output_path(target_path: Path) -> Path:
+    suffix = target_path.suffix or ".mp4"
+    return target_path.with_name(f"{target_path.stem}_swapped{suffix}")
+
+
 def map_request(payload: Dict[str, Any]) -> SwapRequest:
     """Convert a raw MorphFlow API payload dict into a SwapRequest.
 
@@ -41,5 +46,5 @@ def map_request(payload: Dict[str, Any]) -> SwapRequest:
         reference_faces=[reference],
         target_asset=target,
         profile_name=payload.get("profile", "balanced"),
-        output_path=payload.get("output_path", ""),
+        output_path=Path(payload["output_path"]) if payload.get("output_path") else _default_output_path(target_path),
     )

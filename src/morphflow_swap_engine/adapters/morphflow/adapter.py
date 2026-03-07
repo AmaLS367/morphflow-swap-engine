@@ -7,18 +7,23 @@ from .request_mapper import map_request
 from .response_mapper import map_response
 from ...core.entities.swap_result import SwapResult
 
-from ...config.loader import load_config
+from ...config import apply_profile, load_config
 from ...core.services.track_scorer import TrackScorer
 from ...infrastructure.alignment.affine_face_aligner import AffineFaceAligner
 from ...infrastructure.detection.insightface_detector import InsightFaceDetector
 from ...infrastructure.restoration.codeformer_restorer import CodeFormerRestorer
 from ...infrastructure.swapping.ghost_swapper import GhostSwapper
+from ...infrastructure.swapping.simswap_swapper import SimSwapSwapper
 from ...infrastructure.temporal.film_stabilizer import FilmStabilizer
 from ...infrastructure.tracking.iou_tracker import IOUFaceTracker
 from ...infrastructure.video.opencv_video_decoder import OpenCVVideoDecoder
 from ...infrastructure.video.opencv_video_encoder import OpenCVVideoEncoder
 from ...infrastructure.diagnostics.local_artifact_store import LocalArtifactStore
 from ...application.use_cases.swap_video_use_case import SwapVideoUseCase
+from ...config.schema import EngineConfig
+from ...core.contracts.i_face_restorer import IFaceRestorer
+from ...core.contracts.i_face_swapper import IFaceSwapper
+from ...core.contracts.i_temporal_stabilizer import ITemporalStabilizer
 
 
 class MorphFlowAdapter:
@@ -29,33 +34,64 @@ class MorphFlowAdapter:
     When the flag is on, the adapter delegates to the new engine pipeline.
     """
 
-    def __init__(self) -> None:
-        self.config = load_config()
-        self.decoder = OpenCVVideoDecoder()
-        self.encoder = OpenCVVideoEncoder()
-        self.detector = InsightFaceDetector()
-        self.tracker = IOUFaceTracker()
-        self.track_scorer = TrackScorer()
-        self.aligner = AffineFaceAligner(crop_size=512, template="ffhq")
-        self.artifact_store = LocalArtifactStore()
-        
-        # Paths would typically come from config, using defaults for now
-        self.swapper = GhostSwapper(model_path="models/ghost_1_256.onnx", batch_size=self.config.batch_size, use_fp16=self.config.use_fp16)
-        self.restorer = CodeFormerRestorer(model_path="models/codeformer.onnx", use_fp16=self.config.use_fp16) if self.config.enable_restoration else None
-        self.temporal_stabilizer = FilmStabilizer(model_path="models/film.onnx", use_fp16=self.config.use_fp16) if self.config.enable_temporal_stabilization else None
+    MODEL_PATHS = {
+        "ghost_512": "models/ghost_512.onnx",
+        "simswap_512": "models/simswap_512.onnx",
+        "codeformer": "models/codeformer.onnx",
+        "film": "models/film.onnx",
+    }
 
-        self.use_case = SwapVideoUseCase(
-            config=self.config,
-            decoder=self.decoder,
-            encoder=self.encoder,
-            detector=self.detector,
-            tracker=self.tracker,
-            track_scorer=self.track_scorer,
-            aligner=self.aligner,
-            swapper=self.swapper,
-            restorer=self.restorer,
-            temporal_stabilizer=self.temporal_stabilizer,
-            artifact_store=self.artifact_store
+    def __init__(self) -> None:
+        self.artifact_store = LocalArtifactStore()
+
+    def _build_swapper(self, config: EngineConfig) -> IFaceSwapper:
+        if config.swap_model_key == "ghost_512":
+            return GhostSwapper(
+                model_path=self.MODEL_PATHS["ghost_512"],
+                execution_providers=config.execution_providers,
+                batch_size=config.batch_size,
+                use_fp16=config.use_fp16,
+            )
+        if config.swap_model_key == "simswap_512":
+            return SimSwapSwapper(
+                model_path=self.MODEL_PATHS["simswap_512"],
+                execution_providers=config.execution_providers,
+                batch_size=config.batch_size,
+                use_fp16=config.use_fp16,
+            )
+        raise ValueError(f"Unsupported swap model key: {config.swap_model_key}")
+
+    def _build_restorer(self, config: EngineConfig) -> IFaceRestorer | None:
+        if not config.enable_restoration:
+            return None
+        return CodeFormerRestorer(
+            model_path=self.MODEL_PATHS["codeformer"],
+            execution_providers=config.execution_providers,
+            use_fp16=config.use_fp16,
+        )
+
+    def _build_temporal(self, config: EngineConfig) -> ITemporalStabilizer | None:
+        if not config.enable_temporal_stabilization:
+            return None
+        return FilmStabilizer(
+            model_path=self.MODEL_PATHS["film"],
+            execution_providers=config.execution_providers,
+            use_fp16=config.use_fp16,
+        )
+
+    def _build_use_case(self, config: EngineConfig) -> SwapVideoUseCase:
+        return SwapVideoUseCase(
+            config=config,
+            decoder=OpenCVVideoDecoder(),
+            encoder=OpenCVVideoEncoder(),
+            detector=InsightFaceDetector(providers=config.execution_providers),
+            tracker=IOUFaceTracker(iou_threshold=config.detector_iou_threshold),
+            track_scorer=TrackScorer(),
+            aligner=AffineFaceAligner(crop_size=512, template="ffhq"),
+            swapper=self._build_swapper(config),
+            restorer=self._build_restorer(config),
+            temporal_stabilizer=self._build_temporal(config),
+            artifact_store=self.artifact_store,
         )
 
     def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -66,13 +102,11 @@ class MorphFlowAdapter:
             )
 
         request = map_request(payload)
-        
-        # Set profile if requested
-        if request.profile_name:
-            self.config.profile = request.profile_name
+        config = apply_profile(load_config(), request.profile_name)
+        use_case = self._build_use_case(config)
 
         try:
-            result = self.use_case.execute(request)
+            result = use_case.execute(request)
         except Exception as e:
             result = SwapResult(
                 output_path=request.output_path,

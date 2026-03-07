@@ -1,5 +1,5 @@
 from .loader import load_config
-from .profiles import BALANCED, HIGH_QUALITY, PROFILES, THROUGHPUT_MAX
+from .profiles import BALANCED, HIGH_QUALITY, PROFILES, THROUGHPUT_MAX, apply_profile
 from .schema import EngineConfig
 
 __all__ = [
@@ -8,5 +8,6 @@ __all__ = [
     "HIGH_QUALITY",
     "THROUGHPUT_MAX",
     "PROFILES",
+    "apply_profile",
     "EngineConfig",
 ]

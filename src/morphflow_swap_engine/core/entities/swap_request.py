@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List
 
 from .reference_face_asset import ReferenceFaceAsset
@@ -14,4 +15,4 @@ class SwapRequest:
     reference_faces: List[ReferenceFaceAsset]
     target_asset: TargetVideoAsset
     profile_name: str = "balanced"
-    output_path: str = ""
+    output_path: Path = field(default_factory=Path)
