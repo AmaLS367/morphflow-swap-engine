@@ -36,6 +36,18 @@ def load_config(ini_path: Optional[Path] = None) -> EngineConfig:
     cfg.detector_min_face_ratio = float(_get("detector_min_face_ratio", str(cfg.detector_min_face_ratio)))
     cfg.detector_min_centrality = float(_get("detector_min_centrality", str(cfg.detector_min_centrality)))
     cfg.target_analysis_sample_count = int(_get("target_analysis_sample_count", str(cfg.target_analysis_sample_count)))
+    if parser.has_option(section, "tracker_iou_threshold"):
+        cfg.tracker_iou_threshold = float(_get("tracker_iou_threshold", str(cfg.detector_iou_threshold)))
+    else:
+        cfg.tracker_iou_threshold = cfg.detector_iou_threshold
+    cfg.tracker_max_lost_frames = int(_get("tracker_max_lost_frames", str(cfg.tracker_max_lost_frames)))
+    cfg.tracker_embedding_similarity_threshold = float(
+        _get(
+            "tracker_embedding_similarity_threshold",
+            str(cfg.tracker_embedding_similarity_threshold),
+        )
+    )
+    cfg.tracker_reid_window_frames = int(_get("tracker_reid_window_frames", str(cfg.tracker_reid_window_frames)))
     cfg.swap_model_key = _get("swap_model_key", cfg.swap_model_key)
     cfg.enable_restoration = _get("enable_restoration", str(cfg.enable_restoration)).lower() == "true"
     cfg.enable_temporal_stabilization = _get("enable_temporal_stabilization", str(cfg.enable_temporal_stabilization)).lower() == "true"

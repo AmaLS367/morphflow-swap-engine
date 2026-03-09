@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 
 @dataclass
@@ -19,6 +19,10 @@ class EngineConfig:
     detector_min_face_ratio: float = 0.0002
     detector_min_centrality: float = 0.0
     target_analysis_sample_count: int = 5
+    tracker_iou_threshold: Optional[float] = None
+    tracker_max_lost_frames: int = 5
+    tracker_embedding_similarity_threshold: float = 0.35
+    tracker_reid_window_frames: int = 8
 
     # Swap model
     swap_model_key: str = "ghost_512"

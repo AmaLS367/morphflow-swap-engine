@@ -17,6 +17,8 @@ class DetectedFace:
     score: float
     frame_index: int = -1
     track_id: int = -1
+    face_area_ratio: float = 0.0
+    centrality: float = 0.0
     embedding: NDArray[np.float32] = field(
         default_factory=lambda: np.empty(0, dtype=np.float32)
     )

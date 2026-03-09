@@ -85,7 +85,12 @@ class MorphFlowAdapter:
             decoder=OpenCVVideoDecoder(),
             encoder=OpenCVVideoEncoder(),
             detector=InsightFaceDetector(providers=config.execution_providers),
-            tracker=IOUFaceTracker(iou_threshold=config.detector_iou_threshold),
+            tracker=IOUFaceTracker(
+                iou_threshold=config.tracker_iou_threshold or config.detector_iou_threshold,
+                max_lost_frames=config.tracker_max_lost_frames,
+                embedding_similarity_threshold=config.tracker_embedding_similarity_threshold,
+                reid_window_frames=config.tracker_reid_window_frames,
+            ),
             track_scorer=TrackScorer(),
             detection_filter=FaceDetectionFilter(
                 min_face_size=config.detector_min_face_size,

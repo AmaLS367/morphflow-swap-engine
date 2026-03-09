@@ -28,6 +28,8 @@ class FaceDetectionFilter:
         filtered: list[DetectedFace] = []
         for face in faces:
             metrics = compute_face_metrics(face, frame_size)
+            face.face_area_ratio = metrics.area_ratio
+            face.centrality = metrics.centrality
             if metrics.width < self.min_face_size or metrics.height < self.min_face_size:
                 continue
             if metrics.area_ratio < self.min_face_ratio:

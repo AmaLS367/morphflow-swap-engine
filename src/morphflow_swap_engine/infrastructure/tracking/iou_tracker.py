@@ -9,111 +9,110 @@ from morphflow_swap_engine.core.entities.tracked_face_sequence import TrackedFac
 
 
 class IOUFaceTracker(IFaceTracker):
-    """Simple IOU-based face tracker."""
+    """Hybrid IOU + embedding tracker for short-gap target face continuity."""
 
-    def __init__(self, iou_threshold: float = 0.3, max_lost_frames: int = 5):
+    def __init__(
+        self,
+        iou_threshold: float = 0.3,
+        max_lost_frames: int = 5,
+        embedding_similarity_threshold: float = 0.35,
+        reid_window_frames: int = 8,
+    ):
         self.iou_threshold = iou_threshold
         self.max_lost_frames = max_lost_frames
-        self.active_tracks: Dict[int, TrackedFaceSequence] = {}
-        self.lost_frames: Dict[int, int] = {}
+        self.embedding_similarity_threshold = embedding_similarity_threshold
+        self.reid_window_frames = reid_window_frames
+        self.tracks: Dict[int, TrackedFaceSequence] = {}
         self.next_track_id = 1
 
     def update(self, detections: List[DetectedFace], frame_index: int) -> List[TrackedFaceSequence]:
-        """Match detections with existing tracks using IOU."""
-        if not self.active_tracks:
-            # Initialize new tracks for all detections
+        """Match detections with tracks using IOU first, then short-gap embedding re-id."""
+        if not self.tracks:
             for det in detections:
-                det.track_id = self.next_track_id
-                det.frame_index = frame_index
-                seq = TrackedFaceSequence(
-                    track_id=self.next_track_id,
-                    faces=[det],
-                    last_seen_frame=frame_index,
-                    stability_score=1.0,
-                )
-                self.active_tracks[self.next_track_id] = seq
-                self.lost_frames[self.next_track_id] = 0
-                self.next_track_id += 1
-            return list(self.active_tracks.values())
+                self._create_track(det, frame_index)
+            return list(self.tracks.values())
 
-        # Match detections to existing tracks
-        track_ids = [tid for tid, track in self.active_tracks.items() if track.is_active]
-        last_faces = [self.active_tracks[tid].faces[-1] for tid in track_ids]
-        
-        matches: List[tuple[int, int, float]] = []
+        match_candidates: list[tuple[int, float, int, int]] = []
         for det_idx, det in enumerate(detections):
-            best_iou = -1.0
-            best_track_idx = -1
-            for track_idx, last_face in enumerate(last_faces):
-                iou = self._calculate_iou(det.bounding_box, last_face.bounding_box)
-                if iou > best_iou and iou >= self.iou_threshold:
-                    best_iou = iou
-                    best_track_idx = track_idx
-            
-            if best_track_idx != -1:
-                matches.append((det_idx, best_track_idx, best_iou))
+            for track_id, track in self.tracks.items():
+                if not track.faces:
+                    continue
 
-        # Sort matches by IOU and keep unique pairs
-        matches.sort(key=lambda x: x[2], reverse=True)
-        used_det = set()
-        used_track = set()
-        
-        final_matches = []
-        for det_idx, track_idx, iou in matches:
-            if det_idx not in used_det and track_idx not in used_track:
-                final_matches.append((det_idx, track_idx))
-                used_det.add(det_idx)
-                used_track.add(track_idx)
+                frame_gap = frame_index - track.last_seen_frame
+                if frame_gap <= 0 or frame_gap > self.reid_window_frames:
+                    continue
 
-        # Update matched tracks
-        for det_idx, track_idx in final_matches:
-            tid = track_ids[track_idx]
-            det = detections[det_idx]
-            det.track_id = tid
-            det.frame_index = frame_index
-            track = self.active_tracks[tid]
-            track.faces.append(det)
-            track.last_seen_frame = frame_index
-            self.lost_frames[tid] = 0
-            track.missed_frames = 0
-            track.stability_score = self._calculate_stability(track)
+                iou = self._calculate_iou(det.bounding_box, track.faces[-1].bounding_box)
+                if track.is_active and iou >= self.iou_threshold:
+                    match_candidates.append((0, iou, det_idx, track_id))
+                    continue
 
-        # Handle unmatched detections (new tracks)
+                similarity = self._embedding_similarity(det, track)
+                if similarity >= self.embedding_similarity_threshold:
+                    match_candidates.append((1, similarity, det_idx, track_id))
+
+        match_candidates.sort(key=lambda item: (item[0], -item[1]))
+        used_detections: set[int] = set()
+        used_tracks: set[int] = set()
+        final_matches: list[tuple[int, int]] = []
+
+        for _priority, _score, det_idx, track_id in match_candidates:
+            if det_idx in used_detections or track_id in used_tracks:
+                continue
+            final_matches.append((det_idx, track_id))
+            used_detections.add(det_idx)
+            used_tracks.add(track_id)
+
+        for det_idx, track_id in final_matches:
+            self._update_track(self.tracks[track_id], detections[det_idx], frame_index)
+
         for det_idx, det in enumerate(detections):
-            if det_idx not in used_det:
-                det.track_id = self.next_track_id
-                det.frame_index = frame_index
-                seq = TrackedFaceSequence(
-                    track_id=self.next_track_id,
-                    faces=[det],
-                    last_seen_frame=frame_index,
-                    stability_score=1.0,
-                )
-                self.active_tracks[self.next_track_id] = seq
-                self.lost_frames[self.next_track_id] = 0
-                self.next_track_id += 1
+            if det_idx not in used_detections:
+                self._create_track(det, frame_index)
 
-        # Handle unmatched tracks (lost)
-        lost_track_ids = [tid for i, tid in enumerate(track_ids) if i not in used_track]
-        for tid in lost_track_ids:
-            self.lost_frames[tid] += 1
-            track = self.active_tracks[tid]
-            track.missed_frames = self.lost_frames[tid]
-            track.stability_score = self._calculate_stability(track)
-            if self.lost_frames[tid] > self.max_lost_frames:
+        for track_id, track in self.tracks.items():
+            if track_id in used_tracks or track.last_seen_frame >= frame_index:
+                continue
+            frame_gap = frame_index - track.last_seen_frame
+            if frame_gap > track.missed_frames:
+                track.total_missed_frames += frame_gap - track.missed_frames
+            track.missed_frames = frame_gap
+            if track.missed_frames > self.max_lost_frames:
                 track.is_active = False
+            track.recompute_aggregates()
 
-        return list(self.active_tracks.values())
+        return list(self.tracks.values())
 
     def get_tracks(self, include_inactive: bool = True) -> List[TrackedFaceSequence]:
         if include_inactive:
-            return list(self.active_tracks.values())
-        return [track for track in self.active_tracks.values() if track.is_active]
+            return list(self.tracks.values())
+        return [track for track in self.tracks.values() if track.is_active]
 
     def reset(self) -> None:
-        self.active_tracks.clear()
-        self.lost_frames.clear()
+        self.tracks.clear()
         self.next_track_id = 1
+
+    def _create_track(self, det: DetectedFace, frame_index: int) -> None:
+        det.track_id = self.next_track_id
+        det.frame_index = frame_index
+        track = TrackedFaceSequence(
+            track_id=self.next_track_id,
+            faces=[det],
+            last_seen_frame=frame_index,
+            is_active=True,
+        )
+        track.recompute_aggregates()
+        self.tracks[self.next_track_id] = track
+        self.next_track_id += 1
+
+    def _update_track(self, track: TrackedFaceSequence, det: DetectedFace, frame_index: int) -> None:
+        det.track_id = track.track_id
+        det.frame_index = frame_index
+        track.faces.append(det)
+        track.last_seen_frame = frame_index
+        track.missed_frames = 0
+        track.is_active = True
+        track.recompute_aggregates()
 
     def _calculate_iou(self, bbox1: np.ndarray[Any, Any], bbox2: np.ndarray[Any, Any]) -> float:
         """Calculate Intersection over Union (IoU) of two bounding boxes."""
@@ -131,8 +130,13 @@ class IOUFaceTracker(IFaceTracker):
             return 0.0
         return float(intersection / union)
 
-    def _calculate_stability(self, track: TrackedFaceSequence) -> float:
-        total = len(track.faces) + track.missed_frames
-        if total <= 0:
+    def _embedding_similarity(self, det: DetectedFace, track: TrackedFaceSequence) -> float:
+        if det.embedding.size == 0 or track.embedding_centroid.size == 0:
             return 0.0
-        return float(len(track.faces) / total)
+        det_embedding = det.embedding.astype(np.float32)
+        det_norm = float(np.linalg.norm(det_embedding))
+        if det_norm == 0:
+            return 0.0
+        det_embedding = det_embedding / det_norm
+        similarity = float(np.dot(det_embedding, track.embedding_centroid))
+        return max(0.0, similarity)

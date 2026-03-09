@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-import numpy as np
 from morphflow_swap_engine.core.entities.tracked_face_sequence import TrackedFaceSequence
 
 
@@ -11,11 +10,11 @@ class TrackScorer:
 
     def __init__(
         self,
-        weight_persistence: float = 1.0,
-        weight_size: float = 1.0,
-        weight_confidence: float = 0.5,
-        weight_centrality: float = 0.5,
-        weight_stability: float = 1.5,
+        weight_persistence: float = 0.30,
+        weight_size: float = 0.20,
+        weight_confidence: float = 0.20,
+        weight_centrality: float = 0.10,
+        weight_stability: float = 0.20,
     ):
         self.weight_persistence = weight_persistence
         self.weight_size = weight_size
@@ -26,18 +25,26 @@ class TrackScorer:
     def find_best_track(
         self,
         tracks: List[TrackedFaceSequence],
-        frame_size: Optional[Tuple[int, int]] = None
+        frame_size: Optional[Tuple[int, int]] = None,
     ) -> Optional[TrackedFaceSequence]:
         """Calculate scores for all tracks and return the one with the highest total score."""
+        del frame_size
         if not tracks:
             return None
 
-        scored_tracks = []
-        for track in tracks:
-            if not track.faces:
-                continue
-            
-            score = self.calculate_score(track, frame_size)
+        scored_tracks: list[tuple[TrackedFaceSequence, float]] = []
+        candidate_tracks = [track for track in tracks if track.faces]
+        if not candidate_tracks:
+            return None
+
+        max_persistence = max(track.frame_count for track in candidate_tracks)
+        max_size_ratio = max(track.average_face_area_ratio for track in candidate_tracks)
+
+        for track in candidate_tracks:
+            score = self.calculate_score(
+                track,
+                normalizers=(float(max_persistence), float(max_size_ratio)),
+            )
             scored_tracks.append((track, score))
 
         if not scored_tracks:
@@ -49,49 +56,29 @@ class TrackScorer:
     def calculate_score(
         self,
         track: TrackedFaceSequence,
-        frame_size: Optional[Tuple[int, int]] = None
+        frame_size: Optional[Tuple[int, int]] = None,
+        normalizers: tuple[float, float] | None = None,
     ) -> float:
         """Calculate a composite score for a single track."""
-        # 1. Persistence (track length relative to total potential frames)
-        persistence = len(track.faces)
-        stability = track.stability_score if track.stability_score > 0 else 0.0
-        
-        # 2. Average Size
-        sizes = []
-        for face in track.faces:
-            bbox = face.bounding_box
-            width = bbox[2] - bbox[0]
-            height = bbox[3] - bbox[1]
-            sizes.append(width * height)
-        avg_size = np.mean(sizes) if sizes else 0.0
+        del frame_size
+        if normalizers is None:
+            max_persistence = float(max(track.frame_count, 1))
+            max_size_ratio = max(track.average_face_area_ratio, 1e-6)
+        else:
+            max_persistence, max_size_ratio = normalizers
 
-        # 3. Average Confidence
-        confidences = [face.score for face in track.faces]
-        avg_confidence = np.mean(confidences) if confidences else 0.0
+        persistence = track.frame_count / max(max_persistence, 1.0)
+        size = track.average_face_area_ratio / max(max_size_ratio, 1e-6)
+        confidence = track.average_confidence
+        centrality = track.average_centrality
+        stability = track.stability_score
 
-        # 4. Centrality (if frame_size provided)
-        centrality = 0.0
-        if frame_size:
-            img_center = np.array([frame_size[0] / 2, frame_size[1] / 2])
-            dist_from_center = []
-            for face in track.faces:
-                bbox = face.bounding_box
-                face_center = np.array([(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2])
-                dist = np.linalg.norm(face_center - img_center)
-                # Normalize by diagonal
-                max_dist = np.linalg.norm(img_center)
-                dist_from_center.append(1.0 - (dist / max_dist))
-            centrality = np.mean(dist_from_center) if dist_from_center else 0.0
-
-        # Composite score
-        # Note: We should ideally normalize these components to a similar range
-        # For now, we use raw values with weights as a first pass
         total_score = (
             self.weight_persistence * persistence +
-            self.weight_size * (avg_size / 10000.0) +  # rough normalization for pixels
-            self.weight_confidence * avg_confidence +
+            self.weight_size * size +
+            self.weight_confidence * confidence +
             self.weight_centrality * centrality +
             self.weight_stability * stability
         )
-        
+
         return float(total_score)

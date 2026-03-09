@@ -95,6 +95,20 @@ class SwapVideoUseCase:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+        def sample_track_frame_indices(track_faces: list[DetectedFace], max_samples: int = 5) -> set[int]:
+            if not track_faces:
+                return set()
+
+            sample_count = min(max_samples, len(track_faces))
+            if sample_count <= 1:
+                return {track_faces[0].frame_index}
+
+            sampled_indices = {
+                int(round(position * (len(track_faces) - 1) / float(sample_count - 1)))
+                for position in range(sample_count)
+            }
+            return {track_faces[index].frame_index for index in sampled_indices}
+
         try:
             # 1. Probe video
             detect_track_started = time.time()
@@ -181,23 +195,16 @@ class SwapVideoUseCase:
             stage_timings["detection_tracking_seconds"] = time.time() - detect_track_started
             tracks = self.tracker.get_tracks(include_inactive=True)
             best_track = self.track_scorer.find_best_track(tracks, (asset.width, asset.height))
-            
+
             if not best_track:
                 raise ValueError("No target face track found in video.")
-                
-            target_track_id = best_track.track_id
 
-            save_artifact(
-                "02_tracking",
-                "track_info",
-                {
-                    "track_id": target_track_id,
-                    "frame_count": len(best_track.faces),
-                    "missed_frames": best_track.missed_frames,
-                    "stability_score": best_track.stability_score,
-                    "is_active": best_track.is_active,
-                },
-            )
+            target_track_id = best_track.track_id
+            selected_track_sample_indices = sample_track_frame_indices(best_track.faces, max_samples=5)
+            tracking_manifest = [track.to_dict() for track in sorted(tracks, key=lambda item: item.track_id)]
+
+            save_artifact("02_tracking", "track_manifest", tracking_manifest)
+            save_artifact("02_tracking", "selected_track", best_track.to_dict())
 
             # Pass 2: Swapping & Reconstruction
             output_path = Path(request.output_path)
@@ -211,6 +218,7 @@ class SwapVideoUseCase:
                 # Reset tracker/temporal for pass 2
                 if self.temporal_stabilizer:
                     self.temporal_stabilizer.reset()
+                saved_tracking_sample_indices: set[int] = set()
 
                 batch_size = self.config.batch_size
                 batch_frames: list[np.ndarray[Any, Any]] = []
@@ -299,16 +307,29 @@ class SwapVideoUseCase:
                         if face.frame_index == frame_idx:
                             target_face = face
                             break
-                    
+
+                    if (
+                        target_face is not None
+                        and frame_idx in selected_track_sample_indices
+                        and frame_idx not in saved_tracking_sample_indices
+                    ):
+                        sample_crop, _ = self.aligner.align(frame, target_face)
+                        save_artifact(
+                            "02_tracking",
+                            f"track_{target_track_id}_frame_{frame_idx}_crop.jpg",
+                            sample_crop,
+                        )
+                        saved_tracking_sample_indices.add(frame_idx)
+
                     batch_frames.append(frame)
                     batch_faces.append(target_face)
                     batch_indices.append(frame_idx)
-                    
+
                     if len(batch_frames) >= batch_size:
                         for processed_frame in flush_batch():
                             frames_processed += 1
                             yield processed_frame
-                
+
                 # Final flush
                 for processed_frame in flush_batch():
                     frames_processed += 1
