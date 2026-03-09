@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Tuple
+from typing import Any
 
 import cv2
 import numpy as np
 
 from morphflow_swap_engine.core.contracts.i_face_aligner import IFaceAligner
 from morphflow_swap_engine.core.entities.detected_face import DetectedFace
+from morphflow_swap_engine.core.value_objects.face_alignment_result import FaceAlignmentResult
+from morphflow_swap_engine.core.value_objects.face_crop_plan import FaceCropPlan
 
-# Standard ArcFace normalized template (usually used for 112x112 or 512x512 with InsightFace)
 ARCFACE_TEMPLATE = np.array([
     [0.34191607, 0.46157411],
     [0.65653393, 0.45983393],
@@ -17,7 +18,6 @@ ARCFACE_TEMPLATE = np.array([
     [0.63151696, 0.82325089]
 ], dtype=np.float32)
 
-# FFHQ 512 template (often used for high res swappers like Ghost)
 FFHQ_TEMPLATE = np.array([
     [0.37691676, 0.46864664],
     [0.62285697, 0.46912813],
@@ -37,48 +37,62 @@ ARCFACE_128_TEMPLATE = np.array([
 
 
 class AffineFaceAligner(IFaceAligner):
-    """Aligns faces using affine transformation based on 5 landmarks."""
+    """Aligns faces with affine warping driven by an explicit crop plan."""
 
-    def __init__(self, crop_size: int = 512, template: str = "ffhq"):
-        self.crop_size = crop_size
-        if template == "arcface_112":
-            self.base_template = ARCFACE_TEMPLATE
-        elif template == "arcface_128":
-            self.base_template = ARCFACE_128_TEMPLATE
-        elif template == "ffhq":
-            self.base_template = FFHQ_TEMPLATE
-        else:
-            self.base_template = ARCFACE_TEMPLATE
-            
-        self.target_points = self.base_template * self.crop_size
+    TEMPLATE_MAP = {
+        "arcface_112": ARCFACE_TEMPLATE,
+        "arcface_128": ARCFACE_128_TEMPLATE,
+        "ffhq": FFHQ_TEMPLATE,
+    }
 
-    def align(self, frame: np.ndarray[Any, Any], face: DetectedFace) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
-        """
-        Align and crop the face from the frame.
-        
-        Returns:
-            Tuple containing the cropped face image and the inverse affine matrix.
-        """
+    def align(
+        self,
+        frame: np.ndarray[Any, Any],
+        face: DetectedFace,
+        crop_plan: FaceCropPlan,
+    ) -> FaceAlignmentResult:
         source_points = face.landmark_5
-        
-        # Estimate the affine transformation matrix
+
+        if source_points.shape != (5, 2):
+            raise ValueError("Face alignment requires 5-point landmarks.")
+
+        target_points = self._target_points(crop_plan)
         affine_matrix = cv2.estimateAffinePartial2D(
-            source_points, 
-            self.target_points, 
-            method=cv2.RANSAC, 
-            ransacReprojThreshold=100
+            source_points,
+            target_points,
+            method=cv2.LMEDS,
         )[0]
-        
-        # Warp the image to get the cropped face
+
+        if affine_matrix is None:
+            raise ValueError("Failed to estimate affine transform for face alignment.")
+
+        face_width = float(face.bounding_box[2] - face.bounding_box[0])
+        face_height = float(face.bounding_box[3] - face.bounding_box[1])
+        face_extent = max(face_width, face_height, 1.0)
+        scale_factor_estimate = float(crop_plan.output_size / face_extent)
+        interpolation_flag = cv2.INTER_CUBIC if scale_factor_estimate > 1.0 else cv2.INTER_AREA
+        interpolation_name = "cubic" if interpolation_flag == cv2.INTER_CUBIC else "area"
+
         crop = cv2.warpAffine(
-            frame, 
-            affine_matrix, 
-            (self.crop_size, self.crop_size),
+            frame,
+            affine_matrix,
+            (crop_plan.output_size, crop_plan.output_size),
             borderMode=cv2.BORDER_REPLICATE,
-            flags=cv2.INTER_AREA
+            flags=interpolation_flag,
         )
-        
-        # Calculate the inverse matrix for pasting back later
         inverse_matrix = cv2.invertAffineTransform(affine_matrix)
-        
-        return crop, inverse_matrix
+
+        return FaceAlignmentResult(
+            crop=crop.astype(np.uint8, copy=False),
+            affine_matrix=affine_matrix.astype(np.float32),
+            inverse_affine_matrix=inverse_matrix.astype(np.float32),
+            crop_plan=crop_plan,
+            interpolation=interpolation_name,
+            scale_factor_estimate=scale_factor_estimate,
+        )
+
+    def _target_points(self, crop_plan: FaceCropPlan) -> np.ndarray[Any, Any]:
+        base_template = self.TEMPLATE_MAP.get(crop_plan.template_name, FFHQ_TEMPLATE)
+        center = np.full((5, 2), 0.5, dtype=np.float32)
+        scaled_template = center + ((base_template - center) * crop_plan.face_coverage_ratio)
+        return scaled_template * crop_plan.output_size

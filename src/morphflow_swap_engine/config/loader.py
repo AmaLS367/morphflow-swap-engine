@@ -48,6 +48,15 @@ def load_config(ini_path: Optional[Path] = None) -> EngineConfig:
         )
     )
     cfg.tracker_reid_window_frames = int(_get("tracker_reid_window_frames", str(cfg.tracker_reid_window_frames)))
+    cfg.alignment_crop_size = int(_get("alignment_crop_size", str(cfg.alignment_crop_size)))
+    cfg.alignment_template = _get("alignment_template", cfg.alignment_template)
+    cfg.alignment_margin_ratio = float(_get("alignment_margin_ratio", str(cfg.alignment_margin_ratio)))
+    cfg.alignment_small_face_threshold_ratio = float(
+        _get(
+            "alignment_small_face_threshold_ratio",
+            str(cfg.alignment_small_face_threshold_ratio),
+        )
+    )
     cfg.swap_model_key = _get("swap_model_key", cfg.swap_model_key)
     cfg.enable_restoration = _get("enable_restoration", str(cfg.enable_restoration)).lower() == "true"
     cfg.enable_temporal_stabilization = _get("enable_temporal_stabilization", str(cfg.enable_temporal_stabilization)).lower() == "true"

@@ -10,6 +10,7 @@ import numpy as np
 
 from morphflow_swap_engine.config.schema import EngineConfig
 from morphflow_swap_engine.core.services.detection_filter import FaceDetectionFilter
+from morphflow_swap_engine.core.services.face_crop_strategy import FaceCropStrategy
 from morphflow_swap_engine.core.services.reference_face_analyzer import ReferenceFaceAnalyzer
 from morphflow_swap_engine.core.services.target_video_analyzer import TargetVideoAnalyzer
 from morphflow_swap_engine.core.services.track_scorer import TrackScorer
@@ -25,6 +26,7 @@ from morphflow_swap_engine.core.contracts.i_video_encoder import IVideoEncoder
 from morphflow_swap_engine.core.entities.detected_face import DetectedFace
 from morphflow_swap_engine.core.entities.swap_request import SwapRequest
 from morphflow_swap_engine.core.entities.swap_result import SwapResult
+from morphflow_swap_engine.core.value_objects.face_alignment_result import FaceAlignmentResult
 from morphflow_swap_engine.core.value_objects.runtime_report import RuntimeReport
 from morphflow_swap_engine.core.value_objects.stage_artifact import StageArtifact
 from morphflow_swap_engine.infrastructure.restoration import apply_color_transfer
@@ -44,6 +46,7 @@ class SwapVideoUseCase:
         detection_filter: FaceDetectionFilter,
         reference_analyzer: ReferenceFaceAnalyzer,
         target_analyzer: TargetVideoAnalyzer,
+        crop_strategy: FaceCropStrategy,
         aligner: IFaceAligner,
         swapper: IFaceSwapper,
         restorer: Optional[IFaceRestorer] = None,
@@ -59,6 +62,7 @@ class SwapVideoUseCase:
         self.detection_filter = detection_filter
         self.reference_analyzer = reference_analyzer
         self.target_analyzer = target_analyzer
+        self.crop_strategy = crop_strategy
         self.aligner = aligner
         self.swapper = swapper
         self.restorer = restorer
@@ -109,6 +113,23 @@ class SwapVideoUseCase:
             }
             return {track_faces[index].frame_index for index in sampled_indices}
 
+        def build_blend_mask(
+            crop_height: int,
+            crop_width: int,
+            feather_ratio: float,
+        ) -> np.ndarray[Any, Any]:
+            mask = np.ones((crop_height, crop_width, 1), dtype=np.float32)
+            feather_margin = int(min(crop_height, crop_width) * max(0.02, min(feather_ratio, 0.2)))
+            if feather_margin <= 0:
+                return mask
+
+            mask[:feather_margin, :] *= np.linspace(0, 1, feather_margin).reshape(-1, 1, 1)
+            mask[-feather_margin:, :] *= np.linspace(1, 0, feather_margin).reshape(-1, 1, 1)
+            mask[:, :feather_margin] *= np.linspace(0, 1, feather_margin).reshape(1, -1, 1)
+            mask[:, -feather_margin:] *= np.linspace(1, 0, feather_margin).reshape(1, -1, 1)
+            blur_size = (feather_margin * 2) | 1
+            return cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+
         try:
             # 1. Probe video
             detect_track_started = time.time()
@@ -141,10 +162,24 @@ class SwapVideoUseCase:
             if reference_analysis.primary_face is None:
                 raise ValueError("No usable face detected in reference image.")
 
+            reference_crop_plan = self.crop_strategy.build_reference_plan(
+                (ref_img.shape[1], ref_img.shape[0]),
+                reference_analysis.primary_face,
+            )
+            reference_alignment = self.aligner.align(
+                ref_img,
+                reference_analysis.primary_face,
+                reference_crop_plan,
+            )
             source_embedding = reference_analysis.primary_face.embedding
+            alignment_summary: dict[str, Any] = {
+                "reference": reference_alignment.to_dict(),
+                "selected_target_samples": [],
+            }
 
             save_artifact("01_detection", "source_face.jpg", ref_img)
             save_artifact("01_detection", "reference_analysis", reference_analysis.to_dict())
+            save_artifact("03_alignment", "reference_aligned_crop.jpg", reference_alignment.crop)
 
             # 3. Two-pass or One-pass? 
             # Pass 1: Detection & Tracking
@@ -205,6 +240,7 @@ class SwapVideoUseCase:
 
             save_artifact("02_tracking", "track_manifest", tracking_manifest)
             save_artifact("02_tracking", "selected_track", best_track.to_dict())
+            alignment_summary["target_track_id"] = target_track_id
 
             # Pass 2: Swapping & Reconstruction
             output_path = Path(request.output_path)
@@ -231,14 +267,18 @@ class SwapVideoUseCase:
 
                     # 1. Prepare batch crops and matrices
                     crops: list[np.ndarray[Any, Any]] = []
-                    inv_matrices: list[np.ndarray[Any, Any]] = []
+                    alignments: list[FaceAlignmentResult] = []
                     valid_indices: list[int] = []
 
                     for i, face in enumerate(batch_faces):
                         if face is not None:
-                            crop, inv_matrix = self.aligner.align(batch_frames[i], face)
-                            crops.append(crop)
-                            inv_matrices.append(inv_matrix)
+                            crop_plan = self.crop_strategy.build_target_plan(
+                                (batch_frames[i].shape[1], batch_frames[i].shape[0]),
+                                face,
+                            )
+                            alignment = self.aligner.align(batch_frames[i], face, crop_plan)
+                            crops.append(alignment.crop)
+                            alignments.append(alignment)
                             valid_indices.append(i)
 
                     if crops:
@@ -249,8 +289,9 @@ class SwapVideoUseCase:
                         for i, swapped_crop in enumerate(swapped_crops):
                             orig_idx = valid_indices[i]
                             frame_idx = batch_indices[orig_idx]
-                            orig_crop = crops[i]
-                            inv_matrix = inv_matrices[i]
+                            alignment = alignments[i]
+                            orig_crop = alignment.crop
+                            inv_matrix = alignment.inverse_affine_matrix
 
                             # Apply color transfer
                             swapped_crop = apply_color_transfer(orig_crop, swapped_crop)
@@ -271,17 +312,11 @@ class SwapVideoUseCase:
 
                             # Paste back
                             mask_height, mask_width = swapped_crop.shape[:2]
-                            mask = np.ones((mask_height, mask_width, 1), dtype=np.float32)
-                            margin = int(min(mask_height, mask_width) * 0.1)
-                            if margin > 0:
-                                mask[:margin, :] *= np.linspace(0, 1, margin).reshape(-1, 1, 1)
-                                mask[-margin:, :] *= np.linspace(1, 0, margin).reshape(-1, 1, 1)
-                                mask[:, :margin] *= np.linspace(0, 1, margin).reshape(1, -1, 1)
-                                mask[:, -margin:] *= np.linspace(1, 0, margin).reshape(1, -1, 1)
-                                blur_size = (margin * 2) | 1
-                                mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
-                            if len(mask.shape) == 2:
-                                mask = np.expand_dims(mask, axis=-1)
+                            mask = build_blend_mask(
+                                mask_height,
+                                mask_width,
+                                alignment.crop_plan.effective_margin_ratio,
+                            )
 
                             paste_w, paste_h = batch_frames[orig_idx].shape[1], batch_frames[orig_idx].shape[0]
                             inv_mask = cv2.warpAffine(mask, inv_matrix, (paste_w, paste_h))
@@ -313,11 +348,21 @@ class SwapVideoUseCase:
                         and frame_idx in selected_track_sample_indices
                         and frame_idx not in saved_tracking_sample_indices
                     ):
-                        sample_crop, _ = self.aligner.align(frame, target_face)
+                        sample_crop_plan = self.crop_strategy.build_target_plan(
+                            (frame.shape[1], frame.shape[0]),
+                            target_face,
+                        )
+                        sample_alignment = self.aligner.align(frame, target_face, sample_crop_plan)
                         save_artifact(
-                            "02_tracking",
-                            f"track_{target_track_id}_frame_{frame_idx}_crop.jpg",
-                            sample_crop,
+                            "03_alignment",
+                            f"track_{target_track_id}_frame_{frame_idx}_aligned.jpg",
+                            sample_alignment.crop,
+                        )
+                        alignment_summary["selected_target_samples"].append(
+                            {
+                                "frame_index": frame_idx,
+                                **sample_alignment.to_dict(),
+                            }
                         )
                         saved_tracking_sample_indices.add(frame_idx)
 
@@ -338,6 +383,7 @@ class SwapVideoUseCase:
             # Encode
             self.encoder.encode(process_frames(), asset, output_path)
             stage_timings["reconstruction_seconds"] = time.time() - reconstruction_started
+            save_artifact("03_alignment", "alignment_summary", alignment_summary)
             success = True
 
         except Exception as e:

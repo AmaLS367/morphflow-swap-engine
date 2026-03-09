@@ -21,10 +21,12 @@ from morphflow_swap_engine.core.entities.swap_request import SwapRequest
 from morphflow_swap_engine.core.entities.target_video_asset import TargetVideoAsset
 from morphflow_swap_engine.core.entities.tracked_face_sequence import TrackedFaceSequence
 from morphflow_swap_engine.core.services.detection_filter import FaceDetectionFilter
+from morphflow_swap_engine.core.services.face_crop_strategy import FaceCropStrategy
 from morphflow_swap_engine.core.services.primary_face_selector import PrimaryFaceSelector
 from morphflow_swap_engine.core.services.reference_face_analyzer import ReferenceFaceAnalyzer
 from morphflow_swap_engine.core.services.target_video_analyzer import TargetVideoAnalyzer
 from morphflow_swap_engine.core.services.track_scorer import TrackScorer
+from morphflow_swap_engine.core.value_objects.face_alignment_result import FaceAlignmentResult
 from morphflow_swap_engine.infrastructure.diagnostics.local_artifact_store import LocalArtifactStore
 from morphflow_swap_engine.infrastructure.tracking.iou_tracker import IOUFaceTracker
 from morphflow_swap_engine.application.use_cases.swap_video_use_case import SwapVideoUseCase
@@ -154,9 +156,18 @@ class _IdentityAligner(IFaceAligner):
         self,
         frame: np.ndarray[Any, Any],
         face: DetectedFace,
-    ) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+        crop_plan: Any,
+    ) -> FaceAlignmentResult:
         del face
-        return frame.copy(), np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        identity = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        return FaceAlignmentResult(
+            crop=frame.copy(),
+            affine_matrix=identity,
+            inverse_affine_matrix=identity,
+            crop_plan=crop_plan,
+            interpolation="area",
+            scale_factor_estimate=1.0,
+        )
 
 
 class _PassthroughSwapper(IFaceSwapper):
@@ -175,6 +186,15 @@ def _make_test_dir() -> Path:
     test_dir = root / str(uuid4())
     test_dir.mkdir()
     return test_dir
+
+
+def _crop_strategy() -> FaceCropStrategy:
+    return FaceCropStrategy(
+        output_size=512,
+        template_name="ffhq",
+        margin_ratio=0.12,
+        small_face_threshold_ratio=0.035,
+    )
 
 
 def test_tracker_links_adjacent_detections_into_one_track() -> None:
@@ -327,6 +347,7 @@ def test_swap_video_use_case_writes_tracking_manifest_and_sampled_crops() -> Non
             detection_filter=FaceDetectionFilter(),
             reference_analyzer=ReferenceFaceAnalyzer(selector=PrimaryFaceSelector()),
             target_analyzer=TargetVideoAnalyzer(selector=PrimaryFaceSelector(), sample_count=3),
+            crop_strategy=_crop_strategy(),
             aligner=_IdentityAligner(),
             swapper=_PassthroughSwapper(),
             artifact_store=LocalArtifactStore(),
@@ -356,9 +377,12 @@ def test_swap_video_use_case_writes_tracking_manifest_and_sampled_crops() -> Non
 
         debug_root = next((tmp_path / "debug").iterdir())
         tracking_dir = debug_root / "artifacts" / "02_tracking"
+        alignment_dir = debug_root / "artifacts" / "03_alignment"
         assert (tracking_dir / "track_manifest.json").exists()
         assert (tracking_dir / "selected_track.json").exists()
-        assert len(list(tracking_dir.glob("track_1_frame_*_crop.jpg"))) == 3
+        assert (alignment_dir / "reference_aligned_crop.jpg").exists()
+        assert (alignment_dir / "alignment_summary.json").exists()
+        assert len(list(alignment_dir.glob("track_1_frame_*_aligned.jpg"))) == 3
     finally:
         shutil.rmtree(tmp_path, ignore_errors=True)
 
@@ -388,6 +412,7 @@ def test_swap_video_use_case_fails_when_no_usable_track_is_found() -> None:
             detection_filter=FaceDetectionFilter(),
             reference_analyzer=ReferenceFaceAnalyzer(selector=PrimaryFaceSelector()),
             target_analyzer=TargetVideoAnalyzer(selector=PrimaryFaceSelector(), sample_count=1),
+            crop_strategy=_crop_strategy(),
             aligner=_IdentityAligner(),
             swapper=_PassthroughSwapper(),
             artifact_store=LocalArtifactStore(),

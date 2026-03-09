@@ -24,6 +24,12 @@ class EngineConfig:
     tracker_embedding_similarity_threshold: float = 0.35
     tracker_reid_window_frames: int = 8
 
+    # Alignment and crop pipeline
+    alignment_crop_size: int = 512
+    alignment_template: str = "ffhq"
+    alignment_margin_ratio: float = 0.12
+    alignment_small_face_threshold_ratio: float = 0.035
+
     # Swap model
     swap_model_key: str = "ghost_512"
 

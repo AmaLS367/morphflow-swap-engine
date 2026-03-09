@@ -9,6 +9,7 @@ from ...core.entities.swap_result import SwapResult
 
 from ...config import apply_profile, load_config
 from ...core.services.detection_filter import FaceDetectionFilter
+from ...core.services.face_crop_strategy import FaceCropStrategy
 from ...core.services.primary_face_selector import PrimaryFaceSelector
 from ...core.services.reference_face_analyzer import ReferenceFaceAnalyzer
 from ...core.services.target_video_analyzer import TargetVideoAnalyzer
@@ -102,7 +103,13 @@ class MorphFlowAdapter:
                 selector=self.primary_face_selector,
                 sample_count=config.target_analysis_sample_count,
             ),
-            aligner=AffineFaceAligner(crop_size=512, template="ffhq"),
+            crop_strategy=FaceCropStrategy(
+                output_size=config.alignment_crop_size,
+                template_name=config.alignment_template,
+                margin_ratio=config.alignment_margin_ratio,
+                small_face_threshold_ratio=config.alignment_small_face_threshold_ratio,
+            ),
+            aligner=AffineFaceAligner(),
             swapper=self._build_swapper(config),
             restorer=self._build_restorer(config),
             temporal_stabilizer=self._build_temporal(config),
