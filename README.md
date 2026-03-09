@@ -14,7 +14,7 @@ The current engine already wires an end-to-end video pipeline:
 2. detect the reference face and extract its embedding
 3. detect faces across target frames
 4. track faces and select the dominant target track
-5. align face crops
+5. build phase-4 reference/target crop plans and align normalized face crops
 6. run batched face swap
 7. optionally run restoration
 8. optionally run temporal stabilization
@@ -25,7 +25,7 @@ The default runtime is assembled through the MorphFlow adapter and currently use
 
 - detector: InsightFace `buffalo_l`
 - tracker: IOU-based face tracker
-- aligner: affine 5-point alignment with FFHQ-style 512 crop
+- alignment/crop: affine 5-point alignment plus explicit crop strategy with configurable margin and `03_alignment` diagnostics
 - swapper: Ghost 512, with SimSwap as fallback profile option
 - restorer: CodeFormer
 - temporal stabilizer: FILM wrapper
