@@ -31,6 +31,11 @@ def load_config(ini_path: Optional[Path] = None) -> EngineConfig:
     cfg.profile = _get("profile", cfg.profile)
     cfg.detector_score_threshold = float(_get("detector_score_threshold", str(cfg.detector_score_threshold)))
     cfg.detector_iou_threshold = float(_get("detector_iou_threshold", str(cfg.detector_iou_threshold)))
+    cfg.detector_batch_size = int(_get("detector_batch_size", str(cfg.detector_batch_size)))
+    cfg.detector_min_face_size = int(_get("detector_min_face_size", str(cfg.detector_min_face_size)))
+    cfg.detector_min_face_ratio = float(_get("detector_min_face_ratio", str(cfg.detector_min_face_ratio)))
+    cfg.detector_min_centrality = float(_get("detector_min_centrality", str(cfg.detector_min_centrality)))
+    cfg.target_analysis_sample_count = int(_get("target_analysis_sample_count", str(cfg.target_analysis_sample_count)))
     cfg.swap_model_key = _get("swap_model_key", cfg.swap_model_key)
     cfg.enable_restoration = _get("enable_restoration", str(cfg.enable_restoration)).lower() == "true"
     cfg.enable_temporal_stabilization = _get("enable_temporal_stabilization", str(cfg.enable_temporal_stabilization)).lower() == "true"

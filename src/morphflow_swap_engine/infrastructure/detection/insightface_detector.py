@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 import numpy as np
 
@@ -62,8 +62,15 @@ class InsightFaceDetector(IFaceDetector):
                 bounding_box=face.bbox,
                 landmark_5=face.kps,
                 score=float(face.det_score),
-                embedding=face.embedding if hasattr(face, "embedding") else np.empty(0, dtype=np.float32)
+                embedding=face.embedding if hasattr(face, "embedding") else np.empty(0, dtype=np.float32),
             )
             results.append(detected_face)
-            
+
         return results
+
+    def detect_batch(
+        self,
+        frames: Sequence[np.ndarray[Any, Any]],
+        score_threshold: float = 0.5,
+    ) -> List[List[DetectedFace]]:
+        return [self.detect(frame, score_threshold=score_threshold) for frame in frames]

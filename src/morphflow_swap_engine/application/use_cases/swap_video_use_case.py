@@ -9,6 +9,9 @@ import cv2
 import numpy as np
 
 from morphflow_swap_engine.config.schema import EngineConfig
+from morphflow_swap_engine.core.services.detection_filter import FaceDetectionFilter
+from morphflow_swap_engine.core.services.reference_face_analyzer import ReferenceFaceAnalyzer
+from morphflow_swap_engine.core.services.target_video_analyzer import TargetVideoAnalyzer
 from morphflow_swap_engine.core.services.track_scorer import TrackScorer
 from morphflow_swap_engine.core.contracts.i_artifact_store import IArtifactStore
 from morphflow_swap_engine.core.contracts.i_face_aligner import IFaceAligner
@@ -38,6 +41,9 @@ class SwapVideoUseCase:
         detector: IFaceDetector,
         tracker: IFaceTracker,
         track_scorer: TrackScorer,
+        detection_filter: FaceDetectionFilter,
+        reference_analyzer: ReferenceFaceAnalyzer,
+        target_analyzer: TargetVideoAnalyzer,
         aligner: IFaceAligner,
         swapper: IFaceSwapper,
         restorer: Optional[IFaceRestorer] = None,
@@ -50,6 +56,9 @@ class SwapVideoUseCase:
         self.detector = detector
         self.tracker = tracker
         self.track_scorer = track_scorer
+        self.detection_filter = detection_filter
+        self.reference_analyzer = reference_analyzer
+        self.target_analyzer = target_analyzer
         self.aligner = aligner
         self.swapper = swapper
         self.restorer = restorer
@@ -90,42 +99,84 @@ class SwapVideoUseCase:
             # 1. Probe video
             detect_track_started = time.time()
             asset = self.decoder.probe(request.target_asset)
-            
+            self.tracker.reset()
+            sampled_frame_indices = set(self.target_analyzer.sample_frame_indices(asset.frame_count))
+            sampled_target_frames = []
+
             # 2. Extract reference embeddings
             if not request.reference_faces:
                 raise ValueError("No reference faces provided.")
-            
+
             ref_path = request.reference_faces[0].asset_path
             ref_img = cv2.imread(ref_path)
             if ref_img is None:
                 raise ValueError(f"Could not read reference image: {ref_path}")
-                
+
             ref_faces = self.detector.detect(ref_img, score_threshold=self.config.detector_score_threshold)
-            if not ref_faces:
-                raise ValueError("No face detected in reference image.")
-                
-            # Pick largest/highest score face as reference
-            ref_faces.sort(key=lambda f: f.score, reverse=True)
-            source_embedding = ref_faces[0].embedding
+            filtered_ref_faces = self.detection_filter.filter_faces(
+                ref_faces,
+                (ref_img.shape[1], ref_img.shape[0]),
+            )
+            reference_analysis = self.reference_analyzer.analyze(
+                (ref_img.shape[1], ref_img.shape[0]),
+                ref_faces,
+                filtered_ref_faces,
+            )
+            warnings.extend(reference_analysis.warnings)
+
+            if reference_analysis.primary_face is None:
+                raise ValueError("No usable face detected in reference image.")
+
+            source_embedding = reference_analysis.primary_face.embedding
 
             save_artifact("01_detection", "source_face.jpg", ref_img)
-            save_artifact(
-                "01_detection",
-                "reference_analysis",
-                {
-                    "reference_face_count": len(ref_faces),
-                    "selected_score": float(ref_faces[0].score),
-                    "selected_embedding_size": int(source_embedding.size),
-                },
-            )
+            save_artifact("01_detection", "reference_analysis", reference_analysis.to_dict())
 
             # 3. Two-pass or One-pass? 
             # Pass 1: Detection & Tracking
-            frame_idx = 0
-            for frame in self.decoder.frames(asset):
-                detections = self.detector.detect(frame, score_threshold=self.config.detector_score_threshold)
-                self.tracker.update(detections, frame_idx)
-                frame_idx += 1
+            detection_batch_size = max(1, self.config.detector_batch_size)
+            detection_frames: list[np.ndarray[Any, Any]] = []
+            detection_indices: list[int] = []
+
+            def flush_detection_batch() -> None:
+                if not detection_frames:
+                    return
+
+                raw_batches = self.detector.detect_batch(
+                    detection_frames,
+                    score_threshold=self.config.detector_score_threshold,
+                )
+                for frame, frame_index, raw_detections in zip(detection_frames, detection_indices, raw_batches):
+                    filtered_detections = self.detection_filter.filter_faces(
+                        raw_detections,
+                        (frame.shape[1], frame.shape[0]),
+                    )
+                    self.tracker.update(filtered_detections, frame_index)
+
+                    if frame_index in sampled_frame_indices:
+                        sampled_target_frames.append(
+                            self.target_analyzer.analyze_frame(
+                                frame_index=frame_index,
+                                frame_size=(frame.shape[1], frame.shape[0]),
+                                raw_faces=raw_detections,
+                                filtered_faces=filtered_detections,
+                            )
+                        )
+
+                detection_frames.clear()
+                detection_indices.clear()
+
+            for frame_idx, frame in enumerate(self.decoder.frames(asset)):
+                detection_frames.append(frame)
+                detection_indices.append(frame_idx)
+                if len(detection_frames) >= detection_batch_size:
+                    flush_detection_batch()
+
+            flush_detection_batch()
+
+            target_analysis = self.target_analyzer.summarize(asset.frame_count, sampled_target_frames)
+            warnings.extend(target_analysis.warnings)
+            save_artifact("01_detection", "target_analysis", target_analysis.to_dict())
 
             stage_timings["detection_tracking_seconds"] = time.time() - detect_track_started
             tracks = self.tracker.get_tracks(include_inactive=True)

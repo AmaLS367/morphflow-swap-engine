@@ -8,6 +8,10 @@ from .response_mapper import map_response
 from ...core.entities.swap_result import SwapResult
 
 from ...config import apply_profile, load_config
+from ...core.services.detection_filter import FaceDetectionFilter
+from ...core.services.primary_face_selector import PrimaryFaceSelector
+from ...core.services.reference_face_analyzer import ReferenceFaceAnalyzer
+from ...core.services.target_video_analyzer import TargetVideoAnalyzer
 from ...core.services.track_scorer import TrackScorer
 from ...infrastructure.alignment.affine_face_aligner import AffineFaceAligner
 from ...infrastructure.detection.insightface_detector import InsightFaceDetector
@@ -38,6 +42,7 @@ class MorphFlowAdapter:
 
     def __init__(self) -> None:
         self.artifact_store = LocalArtifactStore()
+        self.primary_face_selector = PrimaryFaceSelector()
 
     def _build_swapper(self, config: EngineConfig) -> IFaceSwapper:
         if config.swap_model_key == "ghost_512":
@@ -82,6 +87,16 @@ class MorphFlowAdapter:
             detector=InsightFaceDetector(providers=config.execution_providers),
             tracker=IOUFaceTracker(iou_threshold=config.detector_iou_threshold),
             track_scorer=TrackScorer(),
+            detection_filter=FaceDetectionFilter(
+                min_face_size=config.detector_min_face_size,
+                min_face_ratio=config.detector_min_face_ratio,
+                min_centrality=config.detector_min_centrality,
+            ),
+            reference_analyzer=ReferenceFaceAnalyzer(selector=self.primary_face_selector),
+            target_analyzer=TargetVideoAnalyzer(
+                selector=self.primary_face_selector,
+                sample_count=config.target_analysis_sample_count,
+            ),
             aligner=AffineFaceAligner(crop_size=512, template="ffhq"),
             swapper=self._build_swapper(config),
             restorer=self._build_restorer(config),

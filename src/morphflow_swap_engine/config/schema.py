@@ -14,6 +14,11 @@ class EngineConfig:
     # Face detection
     detector_score_threshold: float = 0.5
     detector_iou_threshold: float = 0.4
+    detector_batch_size: int = 8
+    detector_min_face_size: int = 8
+    detector_min_face_ratio: float = 0.0002
+    detector_min_centrality: float = 0.0
+    target_analysis_sample_count: int = 5
 
     # Swap model
     swap_model_key: str = "ghost_512"
